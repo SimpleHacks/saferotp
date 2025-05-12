@@ -493,6 +493,9 @@ static bool read_single_otp_value_N_of_M(uint16_t start_row, uint8_t N, uint8_t 
         PRINT_ERROR("OTP_RW Error: Read OTP N-of-M: Unsupported N=%d, M=%d\n", N, M);
         return false;
     }
+
+    // NOTE: could process the read values as they come in, but keeping them in an array
+    //       greatly simplifies debugging (and thus testing and initial development).)
     uint32_t v[MAX_M_VALUE] = {0u};    // zero-initialize the array, sized for maximum supported `M`
     bool     r[MAX_M_VALUE] = {false}; // zero-initialized is false
     uint_fast8_t votes[24]; // one count for each potential bit to be set
@@ -542,11 +545,11 @@ static bool read_single_otp_value_N_of_M(uint16_t start_row, uint8_t N, uint8_t 
     // For each bit voted upon:
     //    If the number of votes is >= M:
     //       Set the bit in the result. (SUCCESS)
-    //       Failed reads are irrelevant to this result.
+    //       Failed reads are irrelevant as they cannot cause a transition back to zero.
     //    Else if the number of failed reads is >= (N - votes):
-    //       Votes say zero, but failed reads could make it 1.  (ERROR)
+    //       Current votes say the value is zero, but failed reads could change that result.  (ERROR)
     //    Else:
-    //       The votes say zero, which is true even if all the failed reads
+    //       The votes say zero, which is true ***even if*** all the failed reads
     //       would have added to the vote. (SUCCESS)
     uint32_t result = 0u;
     for (uint_fast8_t i = 0; i < 24u; ++i) {

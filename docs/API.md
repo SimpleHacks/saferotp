@@ -1,258 +1,351 @@
 
 # SaferOTP library for RP2350
 
-## Purpose
-
-The one-time programmable fuses on the Raspberry Pi RP2350 chip
-provides a great deal of flexibility.  The design has some nice
-features, such as built-in multiple ways to store redundant data.
-
-## Problems
-
-These can allow additional errors to sneak through.
-
-* ECC algorithm in the datasheet was underspecified.
-* Bootrom does not normally report errors when reading ECC data.
-  * When using guarded reads, a bus fault is reported for ECC errors;
-    While important for security-critical boot, to not normally
-    report ECC decoding errors is a poor design choice.  Moreover,
-    there is no well-defined method for handling bus faults caused
-    by a library's code.
-  * Bootrom does not validate that decoded ECC data (if it detected
-    correctable errors) actually re-encodes to the expected raw data.
-    This lets 3-bit and 5-bit errors slip through(!).
-* Memory-mapped OTP regions normally fail to provide any
-  error reporting for invalidly-encoded / corrupt data.
-  * Same problem as above ... the bootrom appears to be calling
-    into the Synopsys IP block, rather than implementing the ECC
-    checks itself.
-  * The memory-mapped regions are thus also likely using the same
-    undocumented Synopsys IP block, and has the same problems as
-    calling into the bootrom functions.
-
-Development for mere mortals can be expensive, as any
-mistake may make the board unusable (one-time programmable).
-Alternatively, development becomes very slow work, as each
-instruction must be carefully tested.
-
-Having a set of well-tested higher-level APIs can greatly
-reduce this burden.
-
-## Complexity
-
-* There are many ways data could be encoded:
-  * `RAW` ... 24 bits per row, without any redundancy or ECC
-  * `RBIT3` ... Storing the same 24 bits of data on three rows;
-    Reads use per-bit majority voting to determine set bits
-    (2 of 3 majority voting)
-  * `RBIT8` ... Storing the same 24 bits of data on eight rows;
-    Reads use per-bit majority voting to determine set bits
-    (3 of 8 majority voting)
-  * `BYTE3` ... Storing a the same 8 bits in a row three times;
-    Reads use per-bit majority voting to determine set bits
-    (2 of 3 majority voting)
-  * `ECC` ... Storing 16 bits of usable data in a row, with
-    the ability to correct any single-bit error, and detect
-    any two-bit error via six ECC bits.  The final two bits
-    (BRBP) allow a sector with any single bit flipped to still
-    be usable to store an arbitrary value by indicating that
-    all the 22 remaining bits should be inverted prior to
-    performing error correction/detection.
-
-Unfortunately, not only is it non-trivial to use for common tasks,
-the Error Correction that the BIOS applies does not always do
-what is expected.  For example, when an OTP row has ECC encoded
-data, and multiple bits are flipped (e.g., forcing errors in the
-encoded data), the BIOS may improperly return incorrect data.
-
-In addition, when reading an OTP row with ECC encoded data, the
-API appears to require reading **_TWO_** rows at a time.  The
-datasheet says it will return 0xFFFFFFFF on a failure.
-Since the API reads two rows at a time, it cannot indicate which
-of the two rows had correct data (if any).  However, it appears
-that the bootrom does NOT even report ECC errors?
-
-The only way that **_might_** (untested) get notified of ECC errors
-is by using "guarded" reads.  However, using guarded reads will
-result in a hard fault ... requiring complex error handling
-code, if the caller expects to simply report the error and
-continue execution.
-
-As for the bit-by-bit voting ... That's template code that is
-not glamorous, and requires great care to implement correctly.
-Better to have that occur once in a single library, than to have
-many projects each implement and debug their own version.
-
-Without simple, tested helper APIs, many projects may choose to
-ignore the edge cases, or read only one copy ... effectively
-losing all redundancy.
-
-
 ## API
 
-The API uses source data byte counts for all encodings.
-In other words, the byte count reflects the size of the buffer
-that the API will read from / write to.
+The API provides read and write wrappers for the one time programmable (OTP)
+fuses on the RP2350.  It provides support for each of the data encodings
+used by the bootrom and described in the datasheet.  In general, data will
+likely be `ECC` encoded.
 
-This allows simplified use of the API, as the caller may
-use `sizeof(DATA_STRUCTURE)` when writing that data structure.
+### `ECC` Read / Write functions
 
-### Format specifics
+#### Summary for `ECC` encoding
 
-* `RAW` -- Caller provides a `uint32_t` for each OTP row.
-  Only the least significant 24 bits of each `uint32_t` will
-  contain data.  This reflects the API defined by the RP2350 hardware.
-* `RBIT3` and `RBIT8` -- Caller provides a `uint32_t` for each
-  set of three (or eight, respectively) rows that store the data.
-  * For reads, the bit-by-bit majority voting is applied prior
-    to returning the data.
-* `BYTE3` -- Caller provides one `uint8_t` for each row.
-  * For reads, the bit-by-bit majority voting is applied prior
-    to returning the data.
-* `ECC` -- Caller provides one `uint16_t` for each row.
-  * Validly encoded ECC data is returned.
-  * Invalid data returns an error result.
+`ECC` is the recommended encoding for general use.  Each OTP row stores
+16-bits of user data.  Although data read or written must start aligned
+on an OTP row, these APIs allow reading or writing an odd number of bytes.
 
-### Error handling / reporting details
+Each of these read functions will return false, unless all the data is
+read.  Each of these write functions will return false unless all the
+data is written *and* decodes back to the intended value.
 
-#### `ECC` data
+#### `bool saferotp_read_single_value_ecc(uint16_t row, uint16_t* out_data);`
 
-The OTP is always read as a raw 24-bit value, which is then manually
-decoded into a potential result.  The potential result is then
-re-encoded using the ECC algorithm into a re-encoded result.
-(BRBP may be applied to the re-encoded result to match the raw data).
+Reads data from a single OTP row.
 
-Excluding the BRBP bits, it is permissible for the re-encoded result
-and the raw data to differ by at most one bit.  Otherwise, the data
-is considered to not be validly encoded ECC data, and an error is
-reported.  This avoids many false-positive decodings where three or
-five bits were flipped in the raw data.
+The method applies BRBP, corrects single-bit errors, and returns the decoded data.
 
-#### `RBIT3` and `RBIT8` data
+#### `bool saferotp_read_data_ecc(uint16_t start_row, void* out_data, size_t count_of_bytes);`
 
-Both of these use bit-oriented voting, to determine if a bit
-should be set to `1`.  `RBIT3` requires two votes from the the
-bits stored in three rows, while `RBIT8` requires three votes from
-the bits stored in eight rows.
+Starting at the specified start_row, reads ECC encoded data, decoding
+and correcting each row.  `count_of_bytes` may be odd, in which case
+the final OTP row's data will discard the second byte, so calling code
+can use native buffer sizes.
 
-Currently, the behavior for v1.0 of the library is intended to be:
-* Error conditions that cannot modify the resulting data are ignored / hidden.
-* Error conditions that have the potential to affect the resulting data are reported.
+#### `bool saferotp_write_single_value_ecc(uint16_t row, uint16_t new_value);`
 
-The error conditions here refer to failures to read or write an OTP row.
+Writes a single OTP row with 16-bits of data, protected by ECC.
+Writes will NOT fail even if a single bit in the OTP row is already set.
 
-A future version of the library may allow for a behavior which simply
-**_IGNORES_** OTP rows that cannot be read, at least for `RBIT8`.
-The alternative behavior would have no effect on `RBIT3` nor `BYTE3`
-data.
+#### `bool saferotp_write_data_ecc(uint16_t start_row, const void* data, size_t count_of_bytes);`
 
-* Generically, reads occur as follows:
-  * Keep count of how many rows failed to be read.
-  * For OTP rows successfully read, each set bit adds a vote for its corresponding bit.
-  * After reading all rows, determine final bit value for each bit:
-    * If (votes >= `REQUIRED_BITS`) then set bit to 1
-    * else if (read failures >= `REQUIRED_BITS`) then ERROR CONDITION
-    * else if (votes >= `REQUIRED_BITS` - read failures) then ERROR CONDITION
-    * else set bit to 0
+Writes the supplied buffer to OTP, 16-bits of user data per OTP row,
+starting at the specified start row and continuing until the buffer
+is fully written.  Data is `ECC` encoded prior to writing.
 
-* Generically, writes occur as follows:
-  * Determine if impossible to safely write the data by reading the old data, and
-    if so, exit before writing any data.
-  * Read/Modify/Write the requested bits into each rows (ignoring failures for now)
-  * Verify the data read back (using the `RBIT3` / `RBIT8` function) matches the requested data
-
-* How to determine it's impossible to write the requested data:
-  * Read the voted-upon value using existing API
-    * Fails on various error conditions that should also prevent writing
-    * Also fail if any bits in result are `1`, but new value has them as `0`
-      This prevents writing rows when the requested value could not be stored.
-    * Write the new value (read/modify/write) to each OTP row
-    * Read back the new voted-upon value using existing API
-    * Fail if the voted-upon value does not match the requested value.
-    * Else, success!
-
-#### `BYTE3` data
-
-`BYTE3` uses bit-oriented voting, similar to `RBIT3`.  However, by only storing one byte
-in each OTP row, the error conditions are much simpler to handle (the OTP row is either
-readable or not ... whereas `RBIT3` and `RBIT8` have to consider some votes being readable
-and some votes being unreadable).
-
-Thus, if the OTP row is unreadable, it reports an error condition.
-Otherwise, the bit-by-bit voting is applied to retrieve a single byte for each OTP row.
-
-## Stretch Goals
-
-* Support for OTP row ranges outside the user data area.
-
-* Virtualized OTP ... 
-  * At any time, switch from interacting with the real OTP
-    to interacting with a virtual copy.
-  * By default, caches existing values from OTP.
-  * Option to load from any other source (e.g., flash, ROM,
-    config file, ...) a program desires.
-  * Option to persist the current (real or) virtualized OTP
-    to any other source (e.g., flash, config file, ...).
-
-* Enforcing permissions for access to OTP registers.
-  * ***Excluding*** OTP access keys (see below)
-  * Unique permissions support for Secure-mode vs. Non-secure-mode
-     * Initial implementation presumes all access is from secure mode
-  * Application of OTP permissions in PAGEn_LOCK0 and PAGEn_LOCK1 OTP rows
-  * Hard-coded write restriction for PAGE0 (per datasheet)
-  * Reading soft-lock registers, at least at initialization
-    * Detecting other writes would require use of the memory
-      protection features of the RP2350 (to virtualize access
-      to the soft-lock registers).
-
-* By default, failing writes to special OTP rows with unsupported functionality
-  * e.g., OTP access keys, bootloader keys, encryption keys, etc.
-
-* OTP Directory Entries
-  * Dynamically locate data stored in OTP
-  * Add new entries to the directory
-  * Increase yield for boards shipped with imperfect OTP ...
-    fewer binned compared to using fixed rows
-  * Directory entry type specifies how the data is encoded
-    into the OTP rows (RAW, BYTE3, RBIT3, RBIT8, ECC, ...)
+The buffer may be of arbitrary size.  If the count of bytes is odd,
+the API will pad a zero byte before writing the final row.
 
 
+### `BYTE3X` Read / Write functions
 
-## Non-Goals
+#### Summary for `BYTE3X` encoding
 
-* Emulation of OTP Access Keys
-  * Emulation of OTP access keys would require use of the memory
-    protection features of the RP2350 (to virtualize access
-    to the OTP Access Key registers).
-  * OTP Access Key rows are currently treated the same
-    as any other row.
-* Having virtualized OTP have any effect on bootloader,
-  boot encryption, etc.
-* Other interactions with the CPU / hardware.
-  * e.g., don't expect debug access to be locked out
-    or require a key specified only in virtualized OTP.
+`BYTE3X` is used by the bootrom to store independent bit flags, where
+they may be individually transitions from `0` -> `1`.  See, for example,
+the page lock encoding (section 13.5.3 Lock Encoding in OTP).
 
-## Debugging
+Examples of independent bit flags stored as `BYTE3X` include:
+* `KEYx_VALID` at OTP rows `0xf79..0xf7e`
+* `PAGEn_LOCK0` and `PAGEn_LOCK1` at OTP rows `0xf80..0xffd`
 
-This is a static library, and so gets embedded into other projects.
-However, it has rich debug outputs through macros that can be
-redefined as appropriate for your system... See:
-* `saferotp_lib/saferotp_debug_stub.h`
-* `saferotp_lib/saferotp_debug_stub.c`
+`BYTE3X` may also be used to provide a thermometer counter, although
+the current bootrom uses `RBIT3` for current thermometer counter values.
 
+`BYTE3X` stores a single byte of data per OTP row.
 
-This has been tested with input and output sent via Segger's RTT,
-sent via TinyUSB serial port, and likely supports other debug output
-modes, by simply defining a few macros at the head of the file.
+That single byte is recorded three times, and decoding uses a 2-of-3
+voting scheme to determine the final value.  Thus, the resulting byte
+will have a bit set to `1` if at least two of the three copies of
+that bit are set to `1`.
 
-## WORK IN PROGRESS
+Each of these read functions will return `false` if one of the
+OTP rows cannot be read.
 
-This library doesn't even have a version number yet.
-However, given how many edge cases were uncovered during testing
-of the RP2350 OTP implementation, it seemed this might be useful
-to many other folks working with the RP2350 ... even if not
-feature complete yet.
+Each of these write functions will return `false` unless each byte
+can be written *and* reads back data that decodes to the intended value.
 
 
+#### `bool saferotp_read_single_value_byte3x(uint16_t row, uint8_t* out_data);`
 
+Reads a single OTP row to retrieve the 8-bit data stored using `BYTE3X` encoding.
+
+#### `bool saferotp_read_data_byte3x(uint16_t start_row, void* out_data, size_t count_of_bytes);`
+
+TODO: Not yet implemented.
+
+#### `bool saferotp_write_single_value_byte3x(uint16_t row, uint8_t new_value);`
+
+Writes a single OTP row with 8-bits of data stored with 3x redundancy.
+
+Note: This function will SUCCEED so long as the resulting value written
+has the correct votes to read correctly.
+
+<details><summary>An extreme example</summary><P/>
+
+Writing value `0x57`, where the raw OTP row contains 0x5708A1`:
+
+`0x575757` --> `0b0101'0111'0101'0111'0101'0111` (3x redundancy)
+`0x5708A1` --> `0b0101'0111'0000'1000'1010'0001` (existing OTP row)
+`0x575FF7` --> `0b0101'0111'0101'1111'1111'0111` (OTP stores the logical OR)
+
+When read back, the three votes are:
+
+ Bytes | Binary        | Note
+-------|---------------|----------------
+`0x57` | `0b0101'0111` | votes for each bit position
+`0x5F` | `0b0101'1111` | votes for each bit position
+`0xF7` | `0b1111'0111` | votes for each bit position
+`0x57` | `0b0101'0111` | Bit is `1` where 2+ votes
+
+Thus, because it would read back correctly as `0x57`, the API would succeed.
+
+Best-effort detection of data that makes it impossible to succeed
+occurs prior to writing the OTP row with addition bits set to `1`.
+
+</details>
+
+#### `bool saferotp_write_data_byte3x(uint16_t start_row, const void* data, size_t count_of_bytes);`
+
+TODO: Not yet implemented.
+
+### `RBIT3` Read / Write functions
+
+#### Summary for `RBIT3` encoding
+
+`RBIT3` is used by the bootrom to store independent bit flags,
+using 2-of-3 voting for each bit, similar to `BYTE3X` encoding.
+
+However, while `BYTE3X` stores a single byte per OTP row,
+`RBIT3` stores a 24-bit value (preferably the same value)
+in each of three consecutive OTP rows. 
+
+Examples of independent bit flags include:
+* `BOOT_FLAGS0` at OTP rows `0x048..0x04A`
+* `BOOT_FLAGS1` at OTP rows `0x04B..0x04D`
+* `USB_BOOT_FLAGS` at OTP rows `0x059..0x05B`
+
+Examples of a thermometer counter includes:
+* `DEFAULT_BOOT_VERSION0` and `DEFAULT_BOOT_VERSION1` at OTP rows `0x04F..0x051` and `0x052..0x054`, respectively.
+
+#### `bool saferotp_read_single_value_rbit3(uint16_t start_row, uint32_t* out_data);`
+
+Starting at the specified row, reads a 24-bit value from three consecutive rows.
+If all three rows are readable, the 2-of-3 voting is applied to determine the final value.
+
+If a single row is not readable, but the remaining two rows report identical 24-bit values,
+the value is returned.  This is possible because, regardless of the bits stored in the third
+OTP row, the voted-upon value would not change.
+
+#### `bool saferotp_read_data_rbit3(uint16_t start_row, void* out_data, size_t count_of_bytes);`
+
+TODO: Not yet implemented.
+
+#### `bool saferotp_write_single_value_rbit3(uint16_t start_row, uint32_t new_value);`
+
+Starting at the specified row, writes the 24-bit new value to three consecutive rows.
+
+This function will succeed if, after writing the new value to those rows, an `RBIT3` read
+reports the new value.
+
+#### `bool saferotp_write_data_rbit3(uint16_t start_row, const void* data, size_t count_of_bytes);`
+
+TODO: Not yet implemented.
+
+### `RBIT8` Read / Write functions
+
+#### Summary for `RBIT8` encoding
+
+The `RBIT8` encoding is similar to `RBIT3`, except that it uses 3-of-8 voting
+instead of 2-of-3 voting for each bit.  This creates a large number of edge
+cases and slightly more complex analysis to ensure only correct values are
+decoded.
+
+At time of writing, this encoding was only used in two locations:
+* `CRIT0` at OTP rows `0x038..0x03F`, "Page 0 Critical Boot Flags"
+* `CRIT1` at OTP rows `0x040..0x047`, "Page 1 Critical Boot Flags"
+
+Writing is straightforward, and similar to `RBIT3`.
+
+<details><summary>Reading has the additional edge cases, if one or more rows failed to read.</summary><P/>
+
+If there are no read failures, the eight read values contain the votes
+for each bit.  Any bit with at least three votes will be set in the result,
+while all other bits will be zero.
+
+If there are three or more read failures, the function will return an error
+unless there are at least three votes for every bit (e.g., result of 0xFFFFFF).
+This is because, no matter what the values of the successfully read rows, the
+rows that failed to read could add enough votes to cause the bit to be set to `1`.
+
+If there are two failed reads, the function will return an error unless all
+the rows fully agree on the value of every bit.  This is because, if any bit
+has one or two votes, the two OTP rows (if successfully read later) could
+flip the result from `0` to `1` for that bit.
+
+If there is only one failed read, the function will return an error if any
+bit has exactly two votes.  This is because, the OTP row later reads successfully,
+it could flip the vote for that bit from `0` to `1`.
+
+</summary>
+
+Each of these read functions will return `false` if the voted-upon result
+cannot be determined.
+
+Each of these write functions will return `false` unless, after writing the
+updates, a validating `RBIT8` read returns the new values.
+
+#### `bool saferotp_read_single_value_rbit8(uint16_t start_row, uint32_t* out_data);`
+
+Reads a 24-bit value from OTP rows `start_row .. start_row+7`.
+
+Applies 3-of-8 voting to determine the final value.
+
+#### `bool saferotp_read_data_rbit8(uint16_t start_row, void* out_data, size_t count_of_bytes);`
+
+TODO: Not yet implemented.
+
+#### `bool saferotp_write_single_value_rbit8(uint16_t start_row, uint32_t new_value);`
+
+Writes a 24-bit value to OTP rows `start_row .. start_row+7`.
+
+#### `bool saferotp_write_data_rbit8(uint16_t start_row, const void* data, size_t count_of_bytes);`
+
+TODO: Not yet implemented.
+
+### `Raw` Encoding functions
+
+#### Summary for `RAW` encoding
+
+Use of `RAW` encoding, and by extension use of these APIs, is not
+recommended for general use, at least because `RAW` provides no
+ECC (nor bit recovery by polarity) protection.  These API are
+provided in case there is a need to add another encoding scheme,
+or for advanced testing purposes.
+
+In each of these functions, the caller is responsible for:
+* Packing or unpacking the 24-bits of data into each `uint32_t`
+* Defining and using some type of error correction / detection
+* Ensuring that any data buffer is aligned to 4-byte boundary
+* Ensuring that any data buffer is an integral multiple of 4 bytes
+
+These last two can be easily accomplished by allocating the buffer
+as an array of `uint32_t` values.
+
+Each of these read functions will return false, unless all the data is
+read.  Each of these write functions will return false unless all the
+data is written *and* verified.
+
+#### `bool saferotp_write_single_value_raw_unsafe(uint16_t row, uint32_t new_value);`
+
+Writes a single OTP row with 24-bits of data.
+
+#### `bool saferotp_read_single_value_raw_unsafe(uint16_t row, uint32_t* out_data);`
+
+Reads a single OTP row raw.
+
+#### `bool saferotp_write_data_raw_unsafe(uint16_t start_row, const void* data, size_t count_of_bytes);`
+
+Write the supplied buffer to OTP, starting at the specified
+OTP row and continuing until the buffer is fully written.
+
+#### `bool saferotp_read_data_raw_unsafe(uint16_t start_row, void* out_data, size_t count_of_bytes);`
+
+Read raw OTP row data, starting at the specified
+OTP row and continuing until the buffer is filled.
+
+### OTP Virtualization support
+
+The library supports virtualization of OTP rows, to speed up development
+and testing of applications that use OTP.
+
+The API is not stable yet.  The following generally corresponds to the
+API at the time of writing, but is expected to change after creating
+some sample applications that use it, with the goal of keeping the
+usage simple and intuitive.
+
+#### OTP Virtualization Summary
+
+The current implementation is simple in concept and operation,
+but uses ~16kB of RAM.  Is it intended to add CMakefile options that
+enable virtualization support, and to disable it by default.
+
+A single large buffer corresponding the full set of OTP rows
+exists as a static variable in the library.  This buffer is,
+therefore, always allocated in RAM, even if the functionality
+is not actively used.
+
+Each OTP row is represented by a `uint32_t` value, with the
+actualy OTP data stored in the least significant 24 bits.
+
+If the top eight bits are `0x00`, then the remaining 24 bits
+store the raw OTP data, which are returned when reading the
+row by the virtualization layer.
+
+If the top eight bits are `0xFF`, then the row will return an
+error when it is read by the virtualization layer.  This not
+only simplifies copying existing OTP values, but ensures a
+method to indicate a row that is 100% unreadable ... useful
+for testing purposes.
+
+ALL OTHER VALUES FOR THE TOP EIGHT BITS ARE RESERVED FOR
+FUTURE USE.  For example, a future version of the library
+may encode an OTP row that is unreliable, such as by failing
+reads some percentage of the time, or flipping some bit(s)
+some percentage of the time.
+
+#### `bool saferotp_virtualization_init_pages(uint64_t ignored_pages_mask);`
+
+Initializes the virtualization layer.
+
+The OTP is split into 64 pages, each of which stores 64 rows of data.
+If the corresponding bit in `ignored_pages_mask` is clear (`0`), then
+the values of the corresponding page are initialized by reading the
+current values from the real OTP (and errors are stored as such).
+If the corresponding bit is set (`1`), then the OTP rows for that page
+remain zero-initialized.
+
+This function may only be called once.  Subsequent calls will have
+no effect, as OTP access via this library will already be virtualized.
+
+Returns `true` if the virtualization layer was successfully initialized.
+
+#### `bool saferotp_virtualization_restore(uint16_t starting_row, const void* buffer, size_t buffer_size);`
+
+Restores a consecutive set of OTP rows to the values provided in the buffer.
+While generally intended to allow simple restoration of virtualized OTP values
+to a given state (e.g., for testing purposes), this function may also be used
+to restore OTP state across reboots (e.g., by storing the state in FLASH or the like).
+
+This API may be called at any time after the virtualization layer has been initialized.
+The restoration may be done one row at a time, or in larger chunks, to support various
+storage alignment restrictions.
+
+Each row to be restored is represented by a `uint32_t` value in the buffer.
+
+#### `bool saferotp_virtualization_save(uint16_t starting_row, void* buffer, size_t buffer_size);`
+
+Saves a consecutive set of virtualized OTP rows to the provided buffer,
+ignoring any implied permissions or values that would indicate reading
+the virtualized row should report an error.
+
+This is intended to allow state to be stored / restored externally,
+enabling testing of virtualized OTP across reboots.
+
+This API may be called at any time after the virtualization layer has been initialized.
+Saving rows may be done one row at a time, or in larger chunks, to support various
+storage alignment restrictions.
+
+Each row to be saved requires four bytes (a `uint32_t` value) in the provided buffer.
 
