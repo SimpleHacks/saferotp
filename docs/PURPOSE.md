@@ -76,32 +76,21 @@ Yes, encoding can only provide 22-bits of data (16-bits of user data + 5 bits EC
 
 #### Step 4 - Verify that the ***re-encoded*** raw data is equivalent to the raw data read in the first step.
 
-Equivalent is defined to exclude the `BRBP` bits, allowing at most
-a single-bit difference between the `RAW` value the a re-encoding
-of the potential result.
+As the re-encoded value does not include `BRBP` bits, equivalent here
+is defined to consider the `RAW` value after it was (possibly)
+inverted because of its own `BRBP` bits.
 
-If the originally read `RAW` value had the `BRBP` bits set, then the ***re-encoded*** value's low 24 bits are first inverted.
-
-The re-encode value is then XOR'd with the originally-read `RAW` value,
-giving a value where each matching bit is zero, and each differing bit is
-a one.  Counting how many of the least significant 22 bit are set
-indicates the count of bits that were flipped, compared to storing the
-***potential*** result in an OTP row.
+The re-encoded value is then XOR'd with the (`BRBP` adjusted) `RAW`
+value.  Counting the number of the low 22 bits are set in the XOR'd
+result indicates how many bits would need to be flipped to get from
+the re-encoded value to what is stored in the OTP row.
 
 Since the ECC algorithm can only correct a single bit error, if this
-indicates that zero or one bits were flipped, then the ***potential***
-result becomes a confirmed (final) result.
+re-encoding indicates that zero or one bits were flipped, then the
+***potential*** result becomes a confirmed (final) result.
 
-Otherwise, either the data was not encoded as ECC data, or too many bits
-were flipped (either way, this is an ERROR).
-
-
-
-
-
-
-
-
+Otherwise, either the data was not encoded as ECC data, or too many
+bits were flipped.  In either case, this is reported as an ERROR.
 
 
 ### Error handling / reporting details

@@ -96,23 +96,27 @@ has the correct votes to read correctly.
 
 Writing value `0x57`, where the raw OTP row contains 0x5708A1`:
 
-`0x575757` --> `0b0101'0111'0101'0111'0101'0111` (3x redundancy)
-`0x5708A1` --> `0b0101'0111'0000'1000'1010'0001` (existing OTP row)
-`0x575FF7` --> `0b0101'0111'0101'1111'1111'0111` (OTP stores the logical OR)
+Value | Binary | Note
+-------|--------|----------------
+`0x575757` | `0b0101'0111'0101'0111'0101'0111` | Byte 3x redundancy
+`0x5708A1` | `0b0101'0111'0000'1000'1010'0001` | Existing raw OTP row
+`0x575FF7` | `0b0101'0111'0101'1111'1111'0111` | OTP row after writing (logical `OR`)
 
 When read back, the three votes are:
 
  Bytes | Binary        | Note
 -------|---------------|----------------
-`0x57` | `0b0101'0111` | votes for each bit position
-`0x5F` | `0b0101'1111` | votes for each bit position
-`0xF7` | `0b1111'0111` | votes for each bit position
-`0x57` | `0b0101'0111` | Bit is `1` where 2+ votes
+`0x57` | `0b0101'0111` | First byte
+`0x5F` | `0b0101'1111` | Second byte
+`0xF7` | `0b1111'0111` | Third byte
+-------|---------------|----------------
+`0x57` | `0b0101'0111` | 2-of-3 voting
 
-Thus, because it would read back correctly as `0x57`, the API would succeed.
+Thus, because it would read back correctly as `0x57`, the API would succeed, even though some extra bits would be set.
 
-Best-effort detection of data that makes it impossible to succeed
-occurs prior to writing the OTP row with addition bits set to `1`.
+The API makes a best-effort to detect if the new value is impossible to
+store in the `BYTE3X` format (e.g., a zero bit already has 2+ votes)
+before the OTP row is written.
 
 </details>
 

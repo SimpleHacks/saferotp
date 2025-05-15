@@ -13,6 +13,8 @@ Three main purposes:
 
 ## Background
 
+<details><summary>Background</summary><P/>
+
 The one-time programmable (OTP) fuses on the Raspberry Pi RP2350 chip
 provide a great deal of flexibility.  However, the existing
 hardware limits error reporting to raising bus faults when asking for
@@ -30,28 +32,32 @@ simply returned an error code for detected ECC errors, rather than
 silently returning corrupt data.
 
 This library provides that set of simpler APIs, and provides a simple,
-consistent API for both reading and writing data in all supportedreporting errors
-as return values, rather than raising bus faults.
+consistent API for both reading and writing data in all supported
+formats.  The API reports errors as return values, rather than raising
+bus faults, by only reading the OTP rows in `RAW` form, and applying
+the ECC and other checks in software.
 
 The library then grew to provide similar APIs for the other encoding formats
-used by the bootrom, and to enable "virtualize" OTP when using this library's
+used by the bootrom, and to enable "virtualized" OTP when using this library's
 APIs, to reduce the number of boards that need to be thrown away when testing
 and developing features that modify the OTP data.
 
+</details>
+
 ## Usage
-
-### Brute-force
-
-Copy the library files into your project however you like.
-Ensure all the `.c` files are compiled and linked into your
-project.
 
 ### CMake based RP2350 projects
 
 As this is the default for SDK projects, I'll try to list the steps.
 
+A later version will likely include a "before" and "after" sample
+CMake project.
+
 Disclaimer: I am not a CMake expert, and thus there may be "better"
-ways to do this.  No support is provided.
+ways to do this.
+
+<details><summary>Current steps</summary><P/>
+
 
 * This presumes your project root directory contains a `CMakeLists.txt`
 * Copy the library's entire tree / directory structure into a subdirectory.
@@ -67,6 +73,12 @@ ways to do this.  No support is provided.
 * In your project's main `CMakeLists.txt`:
   * Ensure CMake parses the library's configuration and builds, etc: `add_subdirectory(saferotp)`.
   * Ensure your binary links to the library: `target_link_libraries(saferotp_lib)`
+
+### Brute-force
+
+Copy the library files into your project however you like.
+Ensure all the `.c` files are compiled and linked into your
+project.
 
 ### Why not just use the existing APIs?
 
