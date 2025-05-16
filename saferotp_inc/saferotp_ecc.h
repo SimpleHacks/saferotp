@@ -1,5 +1,8 @@
 #pragma once
 
+#ifndef SAFEROTP_ECC_H
+#define SAFEROTP_ECC_H
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -68,3 +71,5 @@ uint32_t saferotp_decode_raw(uint32_t data); // [[unsequenced]]
 #ifdef __cplusplus
 }
 #endif
+
+#endif // defined SAFEROTP_ECC_H

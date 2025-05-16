@@ -3,113 +3,95 @@
 
 ## Purpose
 
-The one-time programmable fuses on the Raspberry Pi RP2350 chip
-provides a great deal of flexibility.  The design has some nice
-features, such as built-in multiple ways to store redundant data.
+Three main purposes:
+1. Provide a simple, consistent API for reading and writing ECC
+   protected data to the OTP rows.
+2. Provide a simple, consistent API for reading and writing
+   data in the other supported formats (`BYTE3X`, `RBIT3`, and `RBIT8`).
+3. Provide a simple API for using virtualized OTP (to reduce the
+   costs of testing and developing anything that modifies OTP data).
 
-## Problems
+## Background
 
-These can allow additional errors to sneak through.
+<details><summary>Background</summary><P/>
 
-* ECC algorithm in the datasheet was underspecified.
-* Bootrom does not report errors when reading ECC data.
-* Bootrom does not validate decoded ECC data (if detected
-  a bitflip), if re-encoded with ECC, matches the read data.
-* Memory-mapped OTP regions fail to provide any
-  error reporting for invalidly-encoded / corrupt data.
+The one-time programmable (OTP) fuses on the Raspberry Pi RP2350 chip
+provide a great deal of flexibility.  However, the existing
+hardware limits error reporting to raising bus faults when asking for
+the reads to be "guarded" reads.  This same restriction applies to
+the memory-mapped OTP areas.
 
-Development for mere mortals can be expensive, as any
-mistake may make the board unusable (one-time programmable).
-Alternatively, development becomes very slow work, as each
-instruction must be carefully tested.
+The problem is that using "guarded" reads causes bus faults on detected
+ECC errors, but using normal reads simply returns corrupted data.
 
-Having a set of well-tested higher-level APIs can greatly
-reduce this burden.
+This makes it difficult to use the ECC capabilities without significant
+coding effort (handling bus faults, adjustments to faulting thread context,
+and restarting execution of the faulting code ... which might not
+even be possible).  It would have been much nicer if the bootrom APIs
+simply returned an error code for detected ECC errors, rather than
+silently returning corrupt data.
 
-## Complexity
+This library provides that set of simpler APIs, and provides a simple,
+consistent API for both reading and writing data in all supported
+formats.  The API reports errors as return values, rather than raising
+bus faults, by only reading the OTP rows in `RAW` form, and applying
+the ECC and other checks in software.
 
-* There are many ways data could be encoded:
-  * RAW ... 24 bits per row, without any redundancy or ECC
-  * RBIT3 ... Storing the same 24 bits of data on three rows;
-    Reads use per-bit majority voting to determine set bits
-    (2 of 3 majority voting)
-  * RBIT8 ... Storing the same 24 bits of data on eight rows;
-    Reads use per-bit majority voting to determine set bits
-    (3 of 8 majority voting)
-  * BYTE3 ... Storing a the same 8 bits in a row three times;
-    Reads use per-bit majority voting to determine set bits
-    (2 of 3 majority voting)
-  * ECC ... Storing 16 bits of usable data in a row, with
-    the ability to correct any single-bit error, and detect
-    any two-bit error via six ECC bits.  The final two bits
-    (BRBP) allow a sector with any single bit flipped to still
-    be usable to store an arbitrary value by indicating that
-    all the 22 remaining bits should be inverted prior to
-    performing error correction/detection.
+The library then grew to provide similar APIs for the other encoding formats
+used by the bootrom, and to enable "virtualized" OTP when using this library's
+APIs, to reduce the number of boards that need to be thrown away when testing
+and developing features that modify the OTP data.
 
-Unfortunately, not only is it non-trivial to use for common tasks,
-the Error Correction that the BIOS applies does not always do
-what is expected.  For example, when an OTP row has ECC encoded
-data, and multiple bits are flipped (e.g., forcing errors in the
-encoded data), the BIOS may improperly return incorrect data.
+</details>
 
-In addition, when reading an OTP row with ECC encoded data, the
-API appears to require reading **_TWO_** rows at a time.  The
-datasheet says it will return 0xFFFFFFFF on a failure.
-Since the API reads two rows at a time, it cannot indicate which
-of the two rows had correct data (if any).  Moreover, it appears
-that the bootrom might NOT report ECC errors ... perhaps
-0xFFFFFFFF is only returned on permission errors?
+## Usage
 
-As for the bit-by-bit voting ... That's template code that is
-not glamorous, and requires great care to implement correctly.
-Without simple, tested helper APIs, many projects may choose to
-ignore the edge cases, or read only one copy ... effectively
-losing all redundancy.
+### CMake based RP2350 projects
 
-## API
+As this is the default for SDK projects, I'll try to list the steps.
 
-Byte-count oriented for all encodings.  
-* RAW reads and write use `uint32_t` for each row, of which
-  only the least significant 24 bits contain data.
-* Reading RBIT3 and RBIT8 are similar, but will read three
-  (or eight) rows for each `uint32_t` and handle both errors
-  and bit-by-bit majority voting.
-* Writing RBIT3 and RBIT8 handle errors and edge cases,
-  such as allowing the overall write to succeed, even when
-  some bits across those rows are faulty (e.g., cannot be
-  set to one but should be, or already set to 1 but need to
-  store zero), so long as rows will decode correctly.
-* Reads and writes of BYTE3 use `uint8_t` for each row,
-  otherwise similarto RBIT3 / RBIT8
-* Reads and writes of ECC data returns `uint16_t` for each row.
+A later version will likely include a "before" and "after" sample
+CMake project.
+
+Disclaimer: I am not a CMake expert, and thus there may be "better"
+ways to do this. Pull requests (with explanations) are welcome.
+
+<details><summary>Current steps</summary><P/>
 
 
-## Stretch Goals
+* This presumes your project root directory contains a `CMakeLists.txt`
+* Copy the library's entire tree / directory structure into a subdirectory.
+  * e.g., I'll presume you added it to a directory called `saferotp`
+  * This directory should be in the same level as your main `CMakeLists.txt`
+* In this library's directory, modify the following files:
+  * `saferotp_lib/saferotp_debug_stub.h`
+    * Define the `PRINT_` macros listed in the comments at the top of the file to use your preferred debug output method.
+    * Alternatively, define the macros as nothing. e.g., `#define PRINT_ERROR(...)`
+  * `CMakeLists.txt`
+    * Modify the few lines grouped around the `HACK` text, to reference any required diretory for your debug macro support
+    * e.g., remove those few lines if the debug macros are defined to nothing.
+* In your project's main `CMakeLists.txt`:
+  * Ensure CMake parses the library's configuration and builds, etc: `add_subdirectory(saferotp)`.
+  * Ensure your binary links to the library: `target_link_libraries(saferotp_lib)`
 
-* Virtualized OTP ... 
-  * At any time, switch from interacting with the real OTP
-    to interacting with a virtual copy.
-  * By default, caches existing values from OTP.
-  * Option to load from any other source (e.g., flash, ROM,
-    config file, ...) a program desires.
-  * Option to persist the current (real or) virtualized OTP
-    to any other source (e.g., flash, config file, ...).
-* OTP Directory Entries
-  * Dynamically locate data stored in OTP
-  * Add new entries to the directory
-  * Increase yield for boards shipped with imperfect OTP ...
-    fewer binned compared to using fixed rows
-  * Directory entry type specifies how the data is encoded
-    into the OTP rows (RAW, BYTE3, RBIT3, RBIT8, ECC, ...)
+### Brute-force
+
+Copy the library files into your project however you like.
+Ensure all the `.c` files are compiled and linked into your
+project.
+
+### Why not just use the existing APIs?
+
+See additional details in `docs/PURPOSE.md` and `docs/USAGE.md`.
+
+## WORK IN PROGRESS
+
+This library doesn't even have a version number yet.
+However, given how many edge cases were uncovered during testing
+of the RP2350 OTP implementation, it seemed this might be useful
+to many other folks working with the RP2350 ... even if not
+feature complete yet.
 
 
-## Debugging
 
-This is a static library, and so gets embedded into other projects.
-However, it has rich debug outputs through macros that can be
-redefined as appropriate for your system.   Tested with output
-sent to Segger's RTT, sent via TinyUSB serial port, and likely
-easily supporting other debug output modes, by simply defining
-a few macros at the head of the file.
 

@@ -1,34 +1,35 @@
 #pragma once
 
-// macros used elsewhere
-#define PRINT_FATAL(...)
-#define PRINT_ERROR(...)
-#define PRINT_WARNING(...)
-#define PRINT_INFO(...)
-#define PRINT_VERBOSE(...)
-#define PRINT_DEBUG(...)
-#define MY_DEBUG_WAIT_FOR_KEY()
-
-#if 0 // non-library debug code ... e.g., using Segger RTT for input / output
-//#include "debug_rtt.h"
+// This header file must define the following macros,
+// which are used by the SaferOTP library:
 //
-// During development, it's REALLY useful to force the code to single-step through this process.
-// To support this, this file has code that uses waits for the RTT terminal to accept input.
-//
-// To use this is a TWO STEP process:
-// 1. In the file to wait, define a unique variable:
-//    static volatile bool g_WaitForKey_uniquifier = false;
-// 2. Define WAIT_FOR_KEY() to something similar to the following:
-//     do {
-//        if (g_WaitForKey_uniquifier) {
-//            MY_DEBUG_WAIT_FOR_KEY();
-//        }
-//     } while (0);
-// 3. Adjust `g_WaitForKey_uniquifier` to wait / not wait
-//    in corresponding code locations.
-//
-// Because OTP fuses can only transition from 0 -> 1, this capability is critical to
-// minimizing the number of RP2350 chips with invalid data during development.
+// void PRINT_FATAL(...);
+// void PRINT_ERROR(...);
+// void PRINT_WARNING(...);
+// void PRINT_INFO(...);
+// void PRINT_VERBOSE(...);
+// void PRINT_DEBUG(...);
+// void MY_DEBUG_WAIT_FOR_KEY(void);
 
-#endif
 
+// The BusPirate project uses RTT for debug input/output.
+// It uses the following header to define these PRINT_* macros.
+// e.g., #define PRINT_FATAL(...)   BP_DEBUG_PRINT(BP_DEBUG_LEVEL_FATAL,   BP_DEBUG_DEFAULT_CATEGORY, __VA_ARGS__)
+#define BP_DEBUG_OVERRIDE_DEFAULT_CATEGORY  BP_DEBUG_CAT_OTP
+
+
+// If you get an error here about not finding the header file,
+// review the notes on the few changes needed to integrate this
+// library into your project.
+// It is NOT required to use RTT. However, it IS required to
+// define the above macros, even if the definition of the macro
+// is empty (disabling the output).
+#include "debug_rtt.h"
+
+// And provide an implementation for the `WAIT_FOR_KEY()`
+// macro that uses RTT to wait for a keypress.
+// It is NOT required to use RTT. However, it IS required to
+// define the above macros, even if the definition of the macro
+// is empty (disabling the wait for keypress).
+#define MY_DEBUG_WAIT_FOR_KEY() SaferOtp_WaitForKey_impl()
+void SaferOtp_WaitForKey_impl(void);

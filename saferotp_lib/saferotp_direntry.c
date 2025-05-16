@@ -8,6 +8,7 @@
 
 #include "pico/stdlib.h" // required for get_core_num()
 #include "saferotp.h"
+#include "saferotp_direntry.h"
 #include "saferotp_debug_stub.h"
 
 static volatile bool g_WaitForKey_otpdir = false;
@@ -115,7 +116,7 @@ static_assert(sizeof(X_DIRENTRY) == (4 * sizeof(uint16_t)));
 // define iterator state so it's invalid (needs reset) when zero-initialized.
 typedef struct _X_ITERATOR_STATE {
     uint16_t        current_otp_row_start;                // zero is not a valid OTP row for an OTP_DIRENTRY item
-    X_DIRENTRY current_entry;                  // all-zero data is indicative of end-of-directory
+    X_DIRENTRY      current_entry;                  // all-zero data is indicative of end-of-directory
     bool            entry_validated;                      // zero means entry not yet validated (entry type, crc, start row, data length)
     bool            should_try_next_row_if_not_validated; // set to true when read fails with ECC error
 } X_ITERATOR_STATE;
@@ -321,7 +322,7 @@ static void x_otp_read_and_validate_direntry(uint16_t direntry_otp_row, X_ITERAT
  
     // read the entry
     if (!failure) {
-        if (!saferotp_read_ecc_data(direntry_otp_row, &entry, sizeof(X_DIRENTRY))) {
+        if (!saferotp_read_data_ecc(direntry_otp_row, &entry, sizeof(X_DIRENTRY))) {
             // TODO: Want to skip entries that are not readable.
             //       Maybe read as RAW to distinguish unreadable vs. not encoded with ECC data?
             //       For now, just skip the entry ... eventually will hit invalid data or out-of-range row.
@@ -396,7 +397,7 @@ static void x_otp_read_and_validate_direntry(uint16_t direntry_otp_row, X_ITERAT
     // NOTE: SUCCESS will be returned when there is an entry of `BP_OTDIR_ENTRY_TYPE_END`.
     if (failure) {
         memset(out_state, 0, sizeof(X_ITERATOR_STATE));
-        out_state->current_entry.entry_type.as_uint16_t = SAFEROTP_OTPDIR_ENTRY_TYPE_INVALID.as_uint16_t;
+        out_state->current_entry.entry_type.as_uint16 = SAFEROTP_OTPDIR_ENTRY_TYPE_INVALID.as_uint16;
         out_state->should_try_next_row_if_not_validated = should_try_next_row_if_not_validated;
     } else {
         memcpy(&out_state->current_entry, &entry, sizeof(X_DIRENTRY));
@@ -435,7 +436,7 @@ static bool x_otp_direntry_move_to_next_entry(void) {
     if (!state->entry_validated) {
         return false; // do nothing ...
     }
-    if (state->current_entry.entry_type.as_uint16_t == SAFEROTP_OTPDIR_ENTRY_TYPE_END.as_uint16_t) {
+    if (state->current_entry.entry_type.as_uint16 == SAFEROTP_OTPDIR_ENTRY_TYPE_END.as_uint16) {
         return false; // do nothing ...
     }
     uint16_t starting_row = state->current_otp_row_start - xROWS_PER_DIRENTRY;
@@ -520,7 +521,7 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
             return 0u;
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RAW: {
-            if (!saferotp_read_raw_data(state->current_entry.raw_data.start_row, buffer, required_size)) {
+            if (!saferotp_read_data_raw_unsafe(state->current_entry.raw_data.start_row, buffer, required_size)) {
                 return 0u;
             }
             return required_size;
@@ -530,7 +531,7 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
             size_t number_of_reads_required = required_size;
             uint8_t* p = buffer; // for pointer arithmetic
             for (size_t i = 0; i < number_of_reads_required; ++i) {
-                if (!saferotp_read_single_row_redundant_byte3x(start_row+i, p+i)) {
+                if (!saferotp_read_single_value_byte3x(start_row+i, p+i)) {
                     return 0u;
                 }
             }
@@ -541,7 +542,7 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
             size_t number_of_reads_required = required_size / sizeof(uint32_t);
             uint32_t* p = (uint32_t*)buffer; // for pointer arithmetic
             for (size_t i = 0; i < number_of_reads_required; ++i) {
-                if (!saferotp_read_redundant_rows_RBIT3(start_row+(i*3), p+i)) {
+                if (!saferotp_read_single_value_rbit3(start_row+(i*3), p+i)) {
                     return 0u;
                 }
             }
@@ -552,7 +553,7 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
             size_t number_of_reads_required = required_size / sizeof(uint32_t);
             uint32_t* p = (uint32_t*)buffer; // for pointer arithmetic
             for (size_t i = 0; i < number_of_reads_required; ++i) {
-                if (!saferotp_read_redundant_rows_RBIT8(start_row+(i*8), p+i)) {
+                if (!saferotp_read_single_value_rbit8(start_row+(i*8), p+i)) {
                     return 0u;
                 }
             }
@@ -560,14 +561,14 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_ECC: {
             uint16_t start_row = state->current_entry.ecc_data.start_row;
-            if (!saferotp_read_ecc_data(start_row, buffer, required_size)) {
+            if (!saferotp_read_data_ecc(start_row, buffer, required_size)) {
                 return 0u;
             }
             return required_size;
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_ECC_ASCII_STRING: {
             uint16_t start_row = state->current_entry.ecc_data.start_row;
-            if (!saferotp_read_ecc_data(start_row, buffer, required_size)) {
+            if (!saferotp_read_data_ecc(start_row, buffer, required_size)) {
                 return 0u;
             }
             uint8_t* p = buffer; // for pointer arithmetic
@@ -607,7 +608,7 @@ bool saferotp_otpdir_find_first_entry_of_type(SAFEROTP_OTPDIR_ENTRY_TYPE entryTy
     if (!saferotp_otpdir_find_first_entry()) {
         return false;
     }
-    while (saferotp_otpdir_get_current_entry_type().as_uint16_t != entryType.as_uint16_t) {
+    while (saferotp_otpdir_get_current_entry_type().as_uint16 != entryType.as_uint16) {
         if (!saferotp_otpdir_find_next_entry()) {
             return false;
         }
@@ -618,7 +619,7 @@ bool saferotp_otpdir_find_next_entry_of_type(SAFEROTP_OTPDIR_ENTRY_TYPE entryTyp
     if (!saferotp_otpdir_find_next_entry()) {
         return false;
     }
-    while (saferotp_otpdir_get_current_entry_type().as_uint16_t != entryType.as_uint16_t) {
+    while (saferotp_otpdir_get_current_entry_type().as_uint16 != entryType.as_uint16) {
         if (!saferotp_otpdir_find_next_entry()) {
             return false;
         }
@@ -706,7 +707,7 @@ bool saferotp_otpdir_add_entry_for_existing_ecc_data(
         size_t remaining_bytes_to_check = valid_data_byte_count;
         for (uint_fast16_t current_row = start_row; current_row < start_row + required_rows; ++current_row, remaining_bytes_to_check -= 2u) {
             uint8_t data[2];
-            if (!saferotp_read_ecc_data(current_row, data, sizeof(data))) {
+            if (!saferotp_read_data_ecc(current_row, data, sizeof(data))) {
                 PRINT_ERROR("Failed to read ECC data from OTP row %03x", current_row);
                 failure = true;
                 break;
