@@ -54,7 +54,7 @@ A later version will likely include a "before" and "after" sample
 CMake project.
 
 Disclaimer: I am not a CMake expert, and thus there may be "better"
-ways to do this.
+ways to do this. Pull requests (with explanations) are welcome.
 
 <details><summary>Current steps</summary><P/>
 
