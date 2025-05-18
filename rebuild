@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# set the script to exit on any command that returns a non-zero status
+set -e
+
+# TODO:
+# * [ ] Automatically set proper working directory (depot root)
+# * [ ] Add cmd-line options
+#   * [ ] `--clean` to do clean build
+# * [ ] Detect errors and stop script when detected
+
+# update CMake for both rp2040 builds and rp2350 builds
+cmake -S . -B build || exit 21
+# clean any prior built items
+cmake --build ./build --parallel --target clean || exit 41
+
+# build all targets
+cmake --build ./build --parallel --target all   || exit 61
+
