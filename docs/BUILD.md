@@ -21,8 +21,6 @@ Tested on Ubuntu 24.04 LTS, using WSL2 (Windows 11).
 
 ## Build steps
 
-BUGBUG / TODO - Not working yet.  Don't know why yet.
-
 ```bash
 # Configure CMake according to the various CMakeLists.txt files
 cmake -S . -B build

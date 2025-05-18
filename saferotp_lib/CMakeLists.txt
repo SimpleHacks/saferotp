@@ -28,7 +28,7 @@ elseif(NOT (${BP_VER} MATCHES "5"))
 endif()
 
 # Cannot be INTERFACE ... as cannot then find "pico/stdlib.h"
-target_link_libraries(      saferotp_lib PRIVATE pico_stdlib)
+target_link_libraries(      saferotp_lib PRIVATE   pico_stdlib)
 
 target_include_directories( saferotp_lib PRIVATE   saferotp_lib)
 target_include_directories( saferotp_lib PRIVATE   saferotp_inc)
