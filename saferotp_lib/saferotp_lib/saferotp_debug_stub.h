@@ -1,35 +1,47 @@
 #pragma once
 
-// This header file must define the following macros,
-// which are used by the SaferOTP library:
-//
-// void PRINT_FATAL(...);
-// void PRINT_ERROR(...);
-// void PRINT_WARNING(...);
-// void PRINT_INFO(...);
-// void PRINT_VERBOSE(...);
-// void PRINT_DEBUG(...);
-// void MY_DEBUG_WAIT_FOR_KEY(void);
+#if defined(BP_VER) && (BP_VER != 5)
+
+    // The BusPirate project uses RTT for debug input/output,
+    // requiring only to define a default category for a file,
+    // followed by the inclusion of teh `debug_rtt.h` header.
+    #define BP_DEBUG_OVERRIDE_DEFAULT_CATEGORY  BP_DEBUG_CAT_OTP
+    #include "debug_rtt.h"
+
+    // And provide an implementation for the `WAIT_FOR_KEY()`
+    // macro that uses RTT to wait for a keypress.
+    #define MY_DEBUG_WAIT_FOR_KEY() SaferOtp_WaitForKey_impl()
+    void SaferOtp_WaitForKey_impl(void);
+
+#elif defined(SAFEROTP_LIB_DEBUG_OUTPUT_RTT)
+
+    // A later example will show how to integrate RTT
+    // in the project, and how to use it.
+
+    // It is NOT required to use RTT. However, it IS required to
+    // define the above macros, even if the definition of the macro
+    // is empty (disabling the output).
+    #error "SAFEROTP_LIB_DEBUG_OUTPUT_RTT is not yet implemented."
+
+#elif defined(SAFEROTP_LIB_DEBUG_OUTPUT_PRINTF)
+
+    #error "SAFEROTP_LIB_DEBUG_OUTPUT_PRINTF is not yet implemented."
+
+#else
+
+    // Remove all debug output because no supported option
+    // was specified.
+    // The following defines will cause the statements to
+    // be removed by the preprocessor ... meaning that
+    // no debug output will be generated.
+    #define PRINT_FATAL(...)
+    #define PRINT_ERROR(...)
+    #define PRINT_WARNING(...)
+    #define PRINT_INFO(...)
+    #define PRINT_VERBOSE(...)
+    #define PRINT_DEBUG(...)
+    #define MY_DEBUG_WAIT_FOR_KEY()
+
+#endif
 
 
-// The BusPirate project uses RTT for debug input/output.
-// It uses the following header to define these PRINT_* macros.
-// e.g., #define PRINT_FATAL(...)   BP_DEBUG_PRINT(BP_DEBUG_LEVEL_FATAL,   BP_DEBUG_DEFAULT_CATEGORY, __VA_ARGS__)
-#define BP_DEBUG_OVERRIDE_DEFAULT_CATEGORY  BP_DEBUG_CAT_OTP
-
-
-// If you get an error here about not finding the header file,
-// review the notes on the few changes needed to integrate this
-// library into your project.
-// It is NOT required to use RTT. However, it IS required to
-// define the above macros, even if the definition of the macro
-// is empty (disabling the output).
-#include "debug_rtt.h"
-
-// And provide an implementation for the `WAIT_FOR_KEY()`
-// macro that uses RTT to wait for a keypress.
-// It is NOT required to use RTT. However, it IS required to
-// define the above macros, even if the definition of the macro
-// is empty (disabling the wait for keypress).
-#define MY_DEBUG_WAIT_FOR_KEY() SaferOtp_WaitForKey_impl()
-void SaferOtp_WaitForKey_impl(void);

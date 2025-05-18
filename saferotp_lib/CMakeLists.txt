@@ -18,10 +18,14 @@ add_library(                saferotp_lib   STATIC
         saferotp_lib/saferotp_debug_stub.c
 )
 
-# HACK -- Manually add the include directory for debug_rtt.h
-#         To support saferotp_lib/saferotp_debug_stub.h
-message(STATUS "SaferOTP ... using hack to include debug_rtt.h")
-target_include_directories( saferotp_lib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../)
+if (NOT BP_VER)
+        # Nothing
+elseif(NOT (${BP_VER} MATCHES "5"))
+        message(STATUS "BusPirate version ${BP_VER} detected")
+        # BusPirate6 integration hack
+        message(STATUS "SaferOTP ... using hack for BusPirate, to include ../../debug_rtt.h")
+        target_include_directories( saferotp_lib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../)
+endif()
 
 # Cannot be INTERFACE ... as cannot then find "pico/stdlib.h"
 target_link_libraries(      saferotp_lib PRIVATE pico_stdlib)
