@@ -5,17 +5,17 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(PICO_PLATFORM "rp2350")
 
-project(                    saferotp_lib   C CXX ASM)
 
 # Pico SDK requires this occur prior to setting the project()
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 pico_sdk_init()
 
+project(                    saferotp_lib   C CXX ASM)
 add_library(                saferotp_lib   STATIC
-        saferotp_lib/saferotp_direntry.c
-        saferotp_lib/saferotp_ecc.c
-        saferotp_lib/saferotp_rw.c
-        saferotp_lib/saferotp_debug_stub.c
+        lib/saferotp_direntry.c
+        lib/saferotp_ecc.c
+        lib/saferotp_rw.c
+        lib/saferotp_debug_stub.c
 )
 
 if (NOT BP_VER)
@@ -30,9 +30,9 @@ endif()
 # Cannot be INTERFACE ... as cannot then find "pico/stdlib.h"
 target_link_libraries(      saferotp_lib PRIVATE   pico_stdlib)
 
-target_include_directories( saferotp_lib PRIVATE   saferotp_lib)
-target_include_directories( saferotp_lib PRIVATE   saferotp_inc)
-target_include_directories( saferotp_lib INTERFACE saferotp_inc)
+target_include_directories( saferotp_lib PRIVATE   lib)
+target_include_directories( saferotp_lib PRIVATE   inc)
+target_include_directories( saferotp_lib INTERFACE inc)
 
 # TODO: How to enable -Wpendantic only for own files, and not pico_stdlib?
 #       pico_stdlib has lots of errors when `-Wpedentic` is enabled
