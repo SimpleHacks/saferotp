@@ -1,7 +1,6 @@
 The MIT License (MIT)
 
-Copyright (c) SimpleHacks ("Simple hacks for a simple life")
-Copyright (c) Henry Gabryjelski
+Copyright (c) Henry Gabryjelski for SimpleHacks ("Simple hacks for a simple life")
 https://github.com/SimpleHacks/saferotp/
 
 

@@ -72,7 +72,7 @@ static_assert(sizeof(SAFEROTP_OTPDIR_ENTRY_TYPE) == sizeof(uint16_t));
 // * one for blank entries (allowing appending of more entries)
 // * one for all-0xFF entries (finalized, non-appendable end of directory)
 // Note that, although the encoding type is shown as separate from the ID,
-// the full 32-bit value is used as a single identifier for the entry.
+// the full 16-bit value is used as a single identifier for the entry.
 #define SAFEROTP_OTPDIR_ENTRY_TYPE_END      ((SAFEROTP_OTPDIR_ENTRY_TYPE){ .as_uint16 = 0x0000u })
 #define SAFEROTP_OTPDIR_ENTRY_TYPE_INVALID  ((SAFEROTP_OTPDIR_ENTRY_TYPE){ .as_uint16 = 0xFFFFu })
 

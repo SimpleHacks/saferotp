@@ -55,8 +55,10 @@
     add_subdirectory( saferotp_lib )
     add_subdirectory( examples     )
 
-# Raspberry Pico SDK disables a bunch of warnings ... Too bad!
-    # add_compile_options(-Wall
+# Raspberry Pico SDK disables many warnings
+    # That's really too bad ... would have been much nicer if could compile cleanly with all warnings.
+    # add_compile_options(
+    #         -Wall                # Default to all warnings
     #         -Wno-format          # int != int32_t as far as the compiler is concerned because gcc has int32_t as long int
     #         -Wno-unused-function # we have some for the docs that aren't called
     #         )

@@ -269,17 +269,19 @@ OTP row and continuing until the buffer is fully written.
 Read raw OTP row data, starting at the specified
 OTP row and continuing until the buffer is filled.
 
-### OTP Virtualization support
+## OTP Virtualization support
+
+> **WARNING:** The API for OTP Virtualization is **_NOT_** yet stable.
 
 The library supports virtualization of OTP rows, to speed up development
 and testing of applications that use OTP.
 
-The API is not stable yet.  The following generally corresponds to the
+The following generally corresponds to the
 API at the time of writing, but is expected to change after creating
 some sample applications that use it, with the goal of keeping the
 usage simple and intuitive.
 
-#### OTP Virtualization Summary
+### OTP Virtualization Summary
 
 The current implementation is simple in concept and operation,
 but uses ~16kB of RAM.  Is it intended to add CMakefile options that
@@ -309,7 +311,7 @@ may encode an OTP row that is unreliable, such as by failing
 reads some percentage of the time, or flipping some bit(s)
 some percentage of the time.
 
-#### `bool saferotp_virtualization_init_pages(uint64_t ignored_pages_mask);`
+### `bool saferotp_virtualization_init_pages(uint64_t ignored_pages_mask);`
 
 Initializes the virtualization layer.
 
@@ -325,7 +327,7 @@ no effect, as OTP access via this library will already be virtualized.
 
 Returns `true` if the virtualization layer was successfully initialized.
 
-#### `bool saferotp_virtualization_restore(uint16_t starting_row, const void* buffer, size_t buffer_size);`
+### `bool saferotp_virtualization_restore(uint16_t starting_row, const void* buffer, size_t buffer_size);`
 
 Restores a consecutive set of OTP rows to the values provided in the buffer.
 While generally intended to allow simple restoration of virtualized OTP values
@@ -338,7 +340,7 @@ storage alignment restrictions.
 
 Each row to be restored is represented by a `uint32_t` value in the buffer.
 
-#### `bool saferotp_virtualization_save(uint16_t starting_row, void* buffer, size_t buffer_size);`
+### `bool saferotp_virtualization_save(uint16_t starting_row, void* buffer, size_t buffer_size);`
 
 Saves a consecutive set of virtualized OTP rows to the provided buffer,
 ignoring any implied permissions or values that would indicate reading
