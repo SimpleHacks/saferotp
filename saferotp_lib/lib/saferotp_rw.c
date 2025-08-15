@@ -116,7 +116,6 @@ static bool hw_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t 
 //   * Values: 0x0 == R/W, 0x1 == R/O, 0x3 == NO ACCESS
 //   * All other values == YAGNI
 //
-
 static_assert(NUM_OTP_ROWS == 0x1000u, "NUM_OTP_ROWS must be 0x1000");
 static_assert(NUM_OTP_ROWS <= UINT16_MAX, "NUM_OTP_ROWS must be less than 0xFFFF ... or else must update range checks for overflow conditions");
 static bool is_valid_otp_range_raw(uint16_t starting_row, size_t raw_byte_count) {
@@ -849,13 +848,13 @@ bool saferotp_read_data_raw_unsafe(uint16_t start_row, void* out_data, size_t co
     if (count_of_bytes == 0u) {
         return false; // ?? should this return true?
     }
-    memset(out_data, 0, count_of_bytes);
     if (count_of_bytes >= (0x1000*4)) { // OTP rows from 0x000u to 0xFFFu, so max 0x1000*2 bytes
         return false;
     }
     if ((count_of_bytes % 4u) != 0) {
         return false;
     }
+    memset(out_data, 0, count_of_bytes);
     return read_raw_wrapper(start_row, out_data, count_of_bytes);
 }
 bool saferotp_write_data_raw_unsafe(uint16_t start_row, const void* data, size_t count_of_bytes) {

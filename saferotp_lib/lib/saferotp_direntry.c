@@ -8,6 +8,7 @@
 
 #include "pico/stdlib.h" // required for get_core_num()
 #include "saferotp.h"
+#include "saferotp_ecc.h" // for SAFER_OTP_RAW_READ_RESULT
 #include "saferotp_direntry.h"
 #include "saferotp_debug_stub.h"
 
@@ -25,6 +26,17 @@ static volatile bool g_WaitForKey_otpdir = false;
 // the actual structure for the OTP DIRENTRY should remain opaque to callers.
 // this allows us to fix any architectural oversights later in a backwards-compatible
 // manner, without changing most client code.
+//
+// For now, the general format of entries:
+// uint16_t[0] == SAFEROTP_OTPDIR_ENTRY_TYPE
+// uint16_t[3] == CRC16
+//
+// Technically, [1,2] are defined by the specific encoding format (e.g., ECC, RBIT3, etc.).
+// However, they generally store the following data:
+//     uint16_t[1] & 0xF000 == Always zero (OTP row range is 0x0000..0x0FFF ... so 12 bits maximum)
+//     uint16_t[1] & 0x0FFF == Start Row for associated data (or zero if none)
+//     uint16_t[2] == Count of **CLIENT** data bytes
+//
 typedef struct _X_DIRENTRY {
     union {
         uint8_t  as_uint8_t[8];
@@ -38,23 +50,23 @@ typedef struct _X_DIRENTRY {
                 // If the entry_type value is also zero, then by definition the CRC16 value is also zero.
                 struct {
                     uint16_t     must_be_zero[2];
-                } none; // SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_NONE
+                } none; // SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RAW
                 // For SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RAW
                 // Start row is the first row storing the data.
                 // The row count must be non-zero.
                 // For buffer allocation purposes, the total data size is 32-bits for every row.
                 // (See raw data ... 24 bits returned as a 32-bit word).
                 struct {
-                    uint16_t     start_row;   // first row of the data
-                    uint16_t     row_count;   // count of rows used for the data, each row considered to be 32-bits in size (e.g., Raw 24 bits)
+                    uint16_t     start_row;       // first row of the data
+                    uint16_t     raw_byte_count;  // number of valid bytes of data stored, each row can store 3 bytes.
                 } raw_data;
                 // For SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_BYTE3X
                 // Start row is the first row storing the data.
                 // The row count must be non-zero.
                 // For buffer allocation purposes, the total data size is equal to the row count (one byte per row).
                 struct {
-                    uint16_t     start_row;   // first row of the data
-                    uint16_t     row_count;   // number of rows used for the data, each row storing a single byte of data
+                    uint16_t     start_row;          // first row of the data
+                    uint16_t     byte3x_byte_count;  // number of valid bytes of data stored, each row can store 1 byte.
                 } byte3x_data;
                 // For SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RBIT3
                 // Start row is the first row storing the data.
@@ -62,8 +74,8 @@ typedef struct _X_DIRENTRY {
                 // For buffer allocation purposes, the total data size is 32-bit for every three rows.
                 // (See raw data ... 24 bits in a 32-bit word).
                 struct {
-                    uint16_t     start_row;   // first row of the data
-                    uint16_t     row_count;   // MUST be a multiple of 3 ... as each row must be duplicated three times; every 3 rows considered to store 32-bits in size (e.g., Raw 24 bits)
+                    uint16_t     start_row;          // first row of the data
+                    uint16_t     rbit3_byte_count;   // number of valid bytes of data stored, three consecutive rows can store 3 bytes.
                 } rbit3_data;
                 // For SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RBIT8
                 // Start row is the first row storing the data.
@@ -71,8 +83,8 @@ typedef struct _X_DIRENTRY {
                 // For buffer allocation purposes, the total data size is 32-bits for every eight rows.
                 // (See raw data ... 24 bits in a 32-bit word).
                 struct {
-                    uint16_t     start_row;   // first row of the data
-                    uint16_t     row_count;   // MUST be a multiple of 8 ... as each row must be duplicated eight times; every 8 rows considered to store 32-bits in size (e.g., Raw 24 bits)
+                    uint16_t     start_row;          // first row of the data
+                    uint16_t     rbit8_byte_count;   // number of valid bytes of data stored, eight consecutive rows can store 3 bytes.
                 } rbit8_data;
                 // For SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_ECC and SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_ECC_ASCII_STRING
                 // Start row is the first row storing the data.
@@ -81,7 +93,7 @@ typedef struct _X_DIRENTRY {
                 // The row count is the byte count divided by 2 (rounded up).
                 struct {
                     uint16_t     start_row;  // first row of the data
-                    uint16_t     byte_count; // count of valid bytes in the data (including trailing NULL for strings)
+                    uint16_t     ecc_byte_count; // count of valid bytes in the data (including trailing NULL for strings)
                 } ecc_data;
                 // For SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_EMBEDED_IN_DIRENTRY
                 // Data is stored embedded directly in the directory entry.
@@ -214,11 +226,12 @@ static bool x_otpdir_entry_appears_valid_raw(const X_DIRENTRY* entry) {
         PRINT_ERROR("Validating entry type as RAW, but type of the entry is 0x%02x", entry->entry_type.encoding_type);
         return false;
     }
-    if (entry->raw_data.row_count == 0u) {
-        PRINT_ERROR("Validating entry type as RAW, but row count is zero");
+    if (entry->raw_data.raw_byte_count == 0u) {
+        PRINT_ERROR("Validating entry type as RAW, but byte count is zero");
         return false;
     }
-    if (!x_otpdir_is_valid_user_content_row_range(entry->raw_data.start_row, entry->raw_data.row_count)) {
+    uint16_t rows_required = (entry->raw_data.raw_byte_count / 3) + ((entry->raw_data.raw_byte_count % 3) == 0u ? 0u : 1u);
+    if (!x_otpdir_is_valid_user_content_row_range(entry->raw_data.start_row, rows_required)) {
         return false;
     }
     return true;
@@ -229,11 +242,12 @@ static bool x_otpdir_entry_appears_valid_byte3x(const X_DIRENTRY* entry) {
         PRINT_ERROR("Validating entry type as BYTE3X, but type of the entry is 0x%02x", entry->entry_type.encoding_type);
         return false;
     }
-    if (entry->byte3x_data.row_count == 0u) {
-        PRINT_ERROR("Validating entry type as BYTE3X, but row count is zero");
+    if (entry->byte3x_data.byte3x_byte_count == 0u) {
+        PRINT_ERROR("Validating entry type as BYTE3X, but byte count is zero");
         return false;
     }
-    if (!x_otpdir_is_valid_user_content_row_range(entry->byte3x_data.start_row, entry->byte3x_data.row_count)) {
+    uint16_t rows_required = entry->byte3x_data.byte3x_byte_count;
+    if (!x_otpdir_is_valid_user_content_row_range(entry->byte3x_data.start_row, rows_required)) {
         return false;
     }
     return true;
@@ -244,15 +258,13 @@ static bool x_otpdir_entry_appears_valid_rbit3(const X_DIRENTRY* entry) {
         PRINT_ERROR("Validating entry type as RBIT3, but type of the entry is 0x%02x", entry->entry_type.encoding_type);
         return false;
     }
-    if (entry->rbit3_data.row_count == 0u) {
-        PRINT_ERROR("Validating entry type as RBIT3, but row count is zero");
+    if (entry->rbit3_data.rbit3_byte_count == 0u) {
+        PRINT_ERROR("Validating entry type as RBIT3, but byte count is zero");
         return false;
     }
-    if (!x_otpdir_is_valid_user_content_row_range(entry->rbit3_data.start_row, entry->rbit3_data.row_count)) {
-        return false;
-    }
-    if ((entry->rbit3_data.row_count % 3u) != 0u) {
-        PRINT_ERROR("Validating entry type as RBIT3, but row count (%03x) is not a multiple of 3", entry->rbit3_data.row_count);
+    uint16_t rows_required = (entry->rbit3_data.rbit3_byte_count / 3) + ((entry->rbit3_data.rbit3_byte_count % 3) == 0u ? 0u : 1u);
+    rows_required *= 3; // each OTP row is stored three times for redundancy....
+    if (!x_otpdir_is_valid_user_content_row_range(entry->rbit3_data.start_row, rows_required)) {
         return false;
     }
     return true;
@@ -263,15 +275,13 @@ static bool x_otpdir_entry_appears_valid_rbit8(const X_DIRENTRY* entry) {
         PRINT_ERROR("Validating entry type as RBIT8, but type of the entry is 0x%02x", entry->entry_type.encoding_type);
         return false;
     }
-    if (entry->rbit8_data.row_count == 0u) {
-        PRINT_ERROR("Validating entry type as RAW, but row count is zero");
+    if (entry->rbit8_data.rbit8_byte_count == 0u) {
+        PRINT_ERROR("Validating entry type as RAW, but byte count is zero");
         return false;
     }
-    if (!x_otpdir_is_valid_user_content_row_range(entry->rbit8_data.start_row, entry->rbit8_data.row_count)) {
-        return false;
-    }
-    if ((entry->rbit8_data.row_count % 8u) != 0u) {
-        PRINT_ERROR("Validating entry type as RBIT8, but row count (%03x) is not a multiple of 8", entry->rbit8_data.row_count);
+    uint16_t rows_required = (entry->rbit8_data.rbit8_byte_count / 3) + ((entry->rbit8_data.rbit8_byte_count % 3) == 0u ? 0u : 1u);
+    rows_required *= 8; // each OTP row is stored three times for redundancy....
+    if (!x_otpdir_is_valid_user_content_row_range(entry->rbit8_data.start_row, rows_required)) {
         return false;
     }
     return true;
@@ -282,12 +292,12 @@ static bool x_otpdir_entry_appears_valid_ecc(const X_DIRENTRY* entry) {
         PRINT_ERROR("Validating entry type as ECC, but type of the entry is 0x%02x", entry->entry_type.encoding_type);
         return false;
     }
-    if (entry->ecc_data.byte_count == 0u) {
+    if (entry->ecc_data.ecc_byte_count == 0u) {
         PRINT_ERROR("Validating entry type as ECC, but byte count is zero");
         return false;
     }
-    uint16_t row_count = entry->ecc_data.byte_count / 2u + (entry->ecc_data.byte_count % 2u) ? 1 : 0;
-    if (!x_otpdir_is_valid_user_content_row_range(entry->ecc_data.start_row, row_count)) {
+    uint16_t required_rows = (entry->ecc_data.ecc_byte_count / 2u) + ((entry->ecc_data.ecc_byte_count % 2u) == 0) ? 0u : 1u;
+    if (!x_otpdir_is_valid_user_content_row_range(entry->ecc_data.start_row, required_rows)) {
         return false;
     }
     return true;
@@ -320,7 +330,7 @@ static void x_otp_read_and_validate_direntry(uint16_t direntry_otp_row, X_ITERAT
     X_DIRENTRY entry;
     memset(&entry, 0, sizeof(X_DIRENTRY));
  
-    // read the entry
+    // read the entry ... Indicate failure here is the case where trying next directory entry is reasonable
     if (!failure) {
         if (!saferotp_read_data_ecc(direntry_otp_row, &entry, sizeof(X_DIRENTRY))) {
             // TODO: Want to skip entries that are not readable.
@@ -466,19 +476,19 @@ static size_t x_otp_direntry_get_current_buffer_size_required(void) {
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_NONE) {
         result = 0u;
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RAW) {
-        result = state->current_entry.raw_data.row_count * sizeof(uint32_t); // 32-bits per row, of which 24 bits contain the data
+        result = state->current_entry.raw_data.raw_byte_count;
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_BYTE3X) {
-        result = state->current_entry.byte3x_data.row_count;
+        result = state->current_entry.byte3x_data.byte3x_byte_count;
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RBIT3) {
-        result = (state->current_entry.rbit3_data.row_count / 3u) * sizeof(uint32_t); // 32-bits per 3 rows, of which 24 bits contain the data
+        result = state->current_entry.rbit3_data.rbit3_byte_count;
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RBIT8) {
-        result = (state->current_entry.rbit8_data.row_count / 8u) * sizeof(uint32_t); // 32-bits per 8 rows, of which 24 bits contain the data
+        result = state->current_entry.rbit8_data.rbit8_byte_count;
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_ECC) {
-        result = state->current_entry.ecc_data.byte_count;
+        result = state->current_entry.ecc_data.ecc_byte_count;
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_ECC_ASCII_STRING) {
-        result = state->current_entry.ecc_data.byte_count;
+        result = state->current_entry.ecc_data.ecc_byte_count;
     } else if (state->current_entry.entry_type.encoding_type == SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_EMBEDED_IN_DIRENTRY) {
-        result = sizeof(uint32_t);
+        result = 4u * sizeof(uint8_t); // 4 bytes of data for embedded entries
     } else {
         // ERROR! Unknown entry type!
         PRINT_FATAL("Unknown OTPDIR entry encoding type 0x%02x was marked as validated?  OTP Row %03x  full data %04x %04x %04x %04x",
@@ -517,7 +527,6 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
 
     switch (state->current_entry.entry_type.encoding_type) {
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_NONE: {
-
             return 0u;
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RAW: {
@@ -527,6 +536,7 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
             return required_size;
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_BYTE3X: {
+            // one byte per OTP row...
             uint16_t start_row = state->current_entry.byte3x_data.start_row;
             size_t number_of_reads_required = required_size;
             uint8_t* p = buffer; // for pointer arithmetic
@@ -538,24 +548,56 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
             return required_size;
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RBIT3: {
+            // Read up to three bytes at a time, but must increment starting row by 3 each time
+            // Thus, have to handle edge case where final read is not of 3 bytes.
             uint16_t start_row = state->current_entry.rbit3_data.start_row;
-            size_t number_of_reads_required = required_size / sizeof(uint32_t);
-            uint32_t* p = (uint32_t*)buffer; // for pointer arithmetic
-            for (size_t i = 0; i < number_of_reads_required; ++i) {
-                if (!saferotp_read_single_value_rbit3(start_row+(i*3), p+i)) {
+            size_t complete_reads = required_size / 3u;
+            size_t remaining_bytes = required_size % 3u;
+            uint8_t* p = (uint8_t*)buffer; // for pointer arithmetic
+            for (size_t i = 0; i < complete_reads; ++i) {
+                SAFEROTP_RAW_READ_RESULT tmp = {0};
+                if (!saferotp_read_single_value_rbit3(start_row+(i*3), &tmp.as_uint32)) {
                     return 0u;
                 }
+                // copy the three data bytes to caller's buffer
+                p[i*3u + 0] = tmp.as_bytes[0];
+                p[i*3u + 1] = tmp.as_bytes[1];
+                p[i*3u + 2] = tmp.as_bytes[2];
+            }
+            if (remaining_bytes != 0u) {
+                SAFEROTP_RAW_READ_RESULT tmp = {0};
+                if (!saferotp_read_single_value_rbit3(start_row+(complete_reads*3u), &tmp.as_uint32)) {
+                    return 0u;
+                }
+                if (remaining_bytes >= 1) { p[(complete_reads*3u) + 0] = tmp.as_bytes[0]; }
+                if (remaining_bytes >= 2) { p[(complete_reads*3u) + 1] = tmp.as_bytes[1]; }
             }
             return required_size;
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_RBIT8: {
+            // Read up to three bytes at a time, but must increment starting row by 3 each time
+            // Thus, have to handle edge case where final read is not of 3 bytes.
             uint16_t start_row = state->current_entry.rbit8_data.start_row;
-            size_t number_of_reads_required = required_size / sizeof(uint32_t);
-            uint32_t* p = (uint32_t*)buffer; // for pointer arithmetic
-            for (size_t i = 0; i < number_of_reads_required; ++i) {
-                if (!saferotp_read_single_value_rbit8(start_row+(i*8), p+i)) {
+            size_t complete_reads = required_size / 3u;
+            size_t remaining_bytes = required_size % 3u;
+            uint8_t* p = (uint8_t*)buffer; // for pointer arithmetic
+            for (size_t i = 0; i < complete_reads; ++i) {
+                SAFEROTP_RAW_READ_RESULT tmp = {0};
+                if (!saferotp_read_single_value_rbit8(start_row+(i*8), &tmp.as_uint32)) {
                     return 0u;
                 }
+                // copy the three data bytes to caller's buffer
+                p[i*3u + 0] = tmp.as_bytes[0];
+                p[i*3u + 1] = tmp.as_bytes[1];
+                p[i*3u + 2] = tmp.as_bytes[2];
+            }
+            if (remaining_bytes != 0u) {
+                SAFEROTP_RAW_READ_RESULT tmp = {0};
+                if (!saferotp_read_single_value_rbit3(start_row+(complete_reads*8u), &tmp.as_uint32)) {
+                    return 0u;
+                }
+                if (remaining_bytes >= 1) { p[(complete_reads*3u) + 0] = tmp.as_bytes[0]; }
+                if (remaining_bytes >= 2) { p[(complete_reads*3u) + 1] = tmp.as_bytes[1]; }
             }
             return required_size;
         }
@@ -567,6 +609,17 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
             return required_size;
         }
         case SAFEROTP_OTPDIR_DATA_ENCODING_TYPE_ECC_ASCII_STRING: {
+            // NOTE: In terms of what's stored in the OTP, the terminating NULL is redundant when
+            //       using the directory entry APIs, because the byte length of the stored data is known.
+            //       Could do:
+            //           Actual data written to OTP rows == strlen(string_data)
+            //           OTP Directory Entry Byte Count  == strlen(string_data)
+            //           Client API required buffer size == strlen(string_data) + 1
+            //       Currently:
+            //           Actual data written to OTP rows == strlen(string_data) + 1
+            //           OTP Directory Entry Byte Count  == strlen(string_data) + 1
+            //           Client API required buffer size == strlen(string_data) + 1
+            //       KISS principle applies ... store the redundant NULL character.
             uint16_t start_row = state->current_entry.ecc_data.start_row;
             if (!saferotp_read_data_ecc(start_row, buffer, required_size)) {
                 return 0u;
@@ -577,6 +630,10 @@ static size_t x_otp_direntry_get_current_entry_data(void* buffer, size_t buffer_
                 return 0u;
             }
             for (size_t i = 0; i < required_size-1; ++i) {
+                if (p[i] == 0x00u) {
+                    PRINT_WARNING("ECC ASCII STRING data contains embedded NULL at offset %d", i);
+                    return 0u;
+                }
                 if ((p[i] < 0x20u) || (p[i] > 0x7Eu)) {
                     PRINT_WARNING("ECC ASCII STRING data contains non-printable character 0x%02x at offset %d", p[i], i);
                     return 0u;
