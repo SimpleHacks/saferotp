@@ -6,6 +6,8 @@ derive_executable_name_from_directory_name()
 add_executable(
         ${EXECUTABLE_FROM_DIRECTORY_NAME}
         main.c
+        hexdump.h
+        hexdump.c
         )
 
 # pull in common dependencies

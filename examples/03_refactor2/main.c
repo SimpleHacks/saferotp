@@ -20,9 +20,33 @@
 #define RAW_ROW ((uint16_t)0x410u) // Row to start write of RAW encoded data
 
 
+// Note: C11 does not support compile-time use of `static const` integrals in a static_assert().
+//       Therefore, use #define for the constants.
+// Note: Similarly, C11 does not support compile-time `strlen()` within a static_assert().
+//       Therefore, have to manually define some of the data.
+//       The following four lines must remain consistent with each other:
+#define ECC_DATA_BYTE_COUNT 16u // NOTE: For now, start by ensuring the data to be ECC written is a multiple of 2 bytes.
+static const void * ECC_DATA_TO_WRITE = "Hello from OTP\0";
+#define RAW_DATA_BYTE_COUNT 20u // NOTE: For now, start by ensuring the data to be RAW written is a multiple of 4 bytes.
+static const unsigned char * RAW_DATA_TO_WRITE = "Hel\0lo \0fro\0m O\0TP\0\0"; // RAW bytes uses 3x data, 1x ignored byte
+
+// How many OTP rows will be used when writing the above data using ECC and RAW encodings?
+// This is an overflow-safe version of `(X + (N-1)) / N` ... and occurs compile time (no execution overhead)
+#define EXPECTED_ECC_ROW_COUNT   ((size_t)((ECC_DATA_BYTE_COUNT / 2u) + ((ECC_DATA_BYTE_COUNT % 2u) == 0u) ? 0u : 1u))
+#define EXPECTED_RAW_ROW_COUNT   ((size_t)((RAW_DATA_BYTE_COUNT / 3u) + ((RAW_DATA_BYTE_COUNT % 3u) == 0u) ? 0u : 1u))
+
+// Convert those row counts into required buffer sizes
+#define EXPECTED_ECC_BYTE_COUNT  ((size_t)(ECC_EXPECTED_ECC_ROW_COUNT * sizeof(uint16_t)))
+#define EXPECTED_RAW_BYTE_COUNT  ((size_t)(RAW_EXPECTED_RAW_ROW_COUNT * sizeof(uint32_t)))
+
+
 bool perform_ecc_tests(uint16_t ecc_row);
 bool perform_raw_tests(uint16_t raw_row);
 bool perform_swlock_tests(uint16_t otp_row);
+bool verify_blank_otp_rows(uint16_t start_row, uint16_t row_count);
+
+
+
 
 
 int main() {
@@ -47,30 +71,44 @@ int main() {
     return 0;
 }
 
-bool perform_ecc_tests(uint16_t ecc_row) {
-    if (ecc_row == 0) { return true; } // allow test to be disabled by setting row to zero
-    otp_cmd_t cmd;
-    int8_t ret;
+bool verify_blank_otp_rows(uint16_t start_row, uint16_t row_count) {
+    if (start_row == 0) { return true; } // allow disabling code path by setting row to zero
+    if (UINT16_MAX - row_count < start_row) { return false; } // overflow
 
-    // Check rows are empty - else the rest of the tests won't behave as expected
-    unsigned char initial_data[32] = {0};
-    cmd.flags = ECC_ROW;
-    ret = rom_func_otp_access(initial_data, sizeof(initial_data)/2, cmd);
-    if (ret) {
-        printf("ERROR: Initial ECC Row Read failed with error %d\n", ret);
-        return false;
-    }
-    for (int i=0; i < sizeof(initial_data); i++) {
-        if (initial_data[i] != 0) {
-            printf("ERROR: This example requires empty OTP rows to run - change the ecc_row and raw_row variables to an empty row and recompile\n");
+    // it might take a bit longer to execute, but just read a single OTP row at a time.
+    // speed is not the essential element here....
+    for (uint16_t row = start_row; row < start_row + row_count; ++row) {
+        otp_cmd_t cmd;
+        int8_t ret;
+        uint32_t data = 0;
+        cmd.flags = start_row; // RAW read (no ECC)
+        ret = rom_func_otp_access((uint8_t*)&data, sizeof(uint32_t), cmd);
+        if (ret) {
+            // failed to read the requested row
+            return false;
+        }
+        if (data != 0) {
+            // data includes at least one non-zero value
             return false;
         }
     }
+    return true;
+}
+
+bool perform_ecc_tests(uint16_t ecc_row) {
+    if (ecc_row == 0) { return true; } // allow test to be disabled by setting row to zero
+
+    // Check rows are empty - else the rest of the tests won't behave as expected
+    if (!verify_blank_otp_rows(ecc_row, EXPECTED_ECC_ROW_COUNT)) {
+        printf("ERROR: Failed to verify ecc_rows %d .. %d are blank - change the ECC_ROW define to an empty row and recompile\n", ecc_row, ecc_row+EXPECTED_ECC_ROW_COUNT-1u);
+        return false;
+    }
 
         // Write an ECC value to OTP - the buffer must have a multiple of 2 length for ECC data
-        unsigned char ecc_write_data[16] = "Hello from OTP";
+        otp_cmd_t cmd;
+        int8_t ret;
         cmd.flags = ECC_ROW | OTP_CMD_ECC_BITS | OTP_CMD_WRITE_BITS;
-        ret = rom_func_otp_access(ecc_write_data, sizeof(ecc_write_data), cmd);
+        ret = rom_func_otp_access((void*)ECC_DATA_TO_WRITE, ECC_DATA_BYTE_COUNT, cmd); // ROM APIs don't allow use of `const` data pointers
         if (ret) {
             printf("ERROR: ECC Write failed with error %d\n", ret);
             return false;
@@ -79,9 +117,9 @@ bool perform_ecc_tests(uint16_t ecc_row) {
         }
 
         // Read it back
-        unsigned char ecc_read_data[sizeof(ecc_write_data)] = {0};
+        unsigned char ecc_read_data[ECC_DATA_BYTE_COUNT] = {0};
         cmd.flags = ECC_ROW | OTP_CMD_ECC_BITS;
-        ret = rom_func_otp_access(ecc_read_data, sizeof(ecc_read_data), cmd);
+        ret = rom_func_otp_access(ecc_read_data, ECC_DATA_BYTE_COUNT, cmd);
         if (ret) {
             printf("ERROR: ECC Read failed with error %d\n", ret);
             return false;
@@ -90,13 +128,29 @@ bool perform_ecc_tests(uint16_t ecc_row) {
         }
 
         // Set some bits, to demonstrate ECC error correction
-        unsigned char ecc_toggle_buffer[sizeof(ecc_write_data)*2] = {0};
+        // First, read the data written using ECC ... but note it takes 2x
+        // the space when reading RAW data, with bytes returned being:
+        //
+        //    RAW[4N+0] == ECC[2N+0]
+        //    RAW[4N+1] == ECC[2N+1]
+        //    RAW[4N+2] == ecc of the two data bytes
+        //    RAW[4N+3] == zero on successful raw read of data; must be zero when sending raw data
+        //
+        unsigned char ecc_toggle_buffer[ECC_DATA_BYTE_COUNT*2] = {0};
         cmd.flags = ECC_ROW;
         ret = rom_func_otp_access(ecc_toggle_buffer, sizeof(ecc_toggle_buffer), cmd);
         if (ret) {
             printf("ERROR: Raw read of ECC data failed with error %d\n", ret);
             return false;
         } else {
+            // He  ll  o   fr  om  OT  P\0     // two bytes data stored per ECC row
+            //   e.  e.  e.  e.  e.  e.   e.   // ECC (e) byte and unused byte (.) per row
+            // 0....-....1....-....2....-....  // index into ecc_toggle_buffer
+            //
+            // The original code seemed to believe two things:
+            // 1. ecc_toggle_buffer[ 0] stored the value 'H' (true)
+            // 2. ecc_toggle_buffer[24] stored the value 'T' (false .. stores 'P'!)
+            // 
             ecc_toggle_buffer[0] = 'x'; // will fail to recover, as flips 2 bits from 'H' (100_1000 -> 111_1000)
             ecc_toggle_buffer[24] = 't'; // will recover, as only flips 1 bit from 'T' (101_0100 -> 111_0100)
             cmd.flags = ecc_row | OTP_CMD_WRITE_BITS;
@@ -110,7 +164,7 @@ bool perform_ecc_tests(uint16_t ecc_row) {
         }
 
         // Read it back
-        unsigned char ecc_toggled_read_data[sizeof(ecc_write_data)] = {0};
+        unsigned char ecc_toggled_read_data[ECC_DATA_BYTE_COUNT] = {0};
         cmd.flags = ECC_ROW | OTP_CMD_ECC_BITS;
         ret = rom_func_otp_access(ecc_toggled_read_data, sizeof(ecc_toggled_read_data), cmd);
         if (ret) {
@@ -121,7 +175,7 @@ bool perform_ecc_tests(uint16_t ecc_row) {
         }
 
         // Attempt to write a different ECC value to OTP - should fail
-        unsigned char ecc_overwrite_data[sizeof(ecc_write_data)] = "hello from otp";
+        unsigned char ecc_overwrite_data[ECC_DATA_BYTE_COUNT] = "hello from otp";
         cmd.flags = ECC_ROW | OTP_CMD_ECC_BITS | OTP_CMD_WRITE_BITS;
         ret = rom_func_otp_access(ecc_overwrite_data, sizeof(ecc_overwrite_data), cmd);
         if (ret == BOOTROM_ERROR_UNSUPPORTED_MODIFICATION) {
@@ -142,22 +196,14 @@ bool perform_ecc_tests(uint16_t ecc_row) {
 bool perform_raw_tests(uint16_t raw_row) {
         if (raw_row == 0) { return true; } // allow test to be disabled by setting row to zero
 
-        otp_cmd_t cmd;
-        int8_t ret;
-
-        unsigned char initial_data[32] = {0};
-        cmd.flags = RAW_ROW;
-        ret = rom_func_otp_access(initial_data+(sizeof(initial_data)/2), sizeof(initial_data)/2, cmd);
-        if (ret) {
-            printf("ERROR: Initial Raw Row Read failed with error %d\n", ret);
+        // Check rows are empty - else the rest of the tests won't behave as expected
+        if (!verify_blank_otp_rows(raw_row, EXPECTED_RAW_ROW_COUNT)) {
+            printf("ERROR: Failed to verify raw_rows %d .. %d are blank - change the RAW_ROW define to an empty row and recompile\n", raw_row, raw_row+EXPECTED_RAW_ROW_COUNT-1u);
             return false;
         }
-        for (int i=0; i < sizeof(initial_data); i++) {
-            if (initial_data[i] != 0) {
-                printf("ERROR: This example requires empty OTP rows to run - change the ecc_row and raw_row variables to an empty row and recompile\n");
-                return false;
-            }
-        }
+
+        otp_cmd_t cmd;
+        int8_t ret;
 
         // Write a raw value to OTP - the buffer must have a multiple of 4 length for raw data
         // Each row only holds 24 bits, so every 4th byte isn't written to OTP
