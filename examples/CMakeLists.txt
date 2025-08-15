@@ -29,4 +29,5 @@ endfunction()
 add_subdirectory_exclude_platforms( 00_hello_otp             host rp2040 )
 add_subdirectory_exclude_platforms( 01_link_saferotp_lib     host rp2040 )
 add_subdirectory_exclude_platforms( 02_refactor              host rp2040 )
+add_subdirectory_exclude_platforms( 03_refactor2             host rp2040 )
 
