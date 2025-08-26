@@ -33,7 +33,7 @@ typedef enum _SAFEROTP_ECC_ERROR {
 // Sometimes it's convenient to view as a uint32_t,
 // other times it's convenient to view the individual fields.
 // (ab)use anonymous unions to allow whichever use is convenient.
-typedef struct _SAFER_OTP_RAW_READ_RESULT {
+typedef struct _SAFEROTP_RAW_READ_RESULT {
     // anonymous structs are supported in C11
     union {
         uint32_t as_uint32;
