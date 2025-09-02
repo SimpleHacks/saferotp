@@ -3,6 +3,11 @@
 #ifndef SAFEROTP_ECC_H
 #define SAFEROTP_ECC_H
 
+// NOTE: This should only contain standard C functions.
+//       Nothing in this file should call RPi SDK functions, nor otherwise rely upon specific hardware.
+//       This is critical to ensure this code can be used on hardware other than RP2350,
+//       such as offline reconstruction on a PC, or unit tests that run on the host compiling the library.
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>

@@ -1,5 +1,9 @@
 #include "saferotp_ecc.h"
 
+// NOTE: This should only contain standard C functions.
+//       Nothing in this file should call RPi SDK functions, nor otherwise rely upon specific hardware.
+//       This is critical to ensure this code can be used on hardware other than RP2350,
+//       such as offline reconstruction on a PC, or unit tests that run on the host compiling the library.
 
 static const uint32_t SUCCESS_MASK = 0x0000FFFFu;
 
