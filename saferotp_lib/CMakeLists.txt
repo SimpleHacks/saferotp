@@ -6,18 +6,29 @@ set(CMAKE_CXX_STANDARD 17)
 set(PICO_PLATFORM "rp2350")
 
 
+# TODO -- Add selectable option to enable hardware HAL
+# TODO -- Add selectable option to enable virtualization HAL
+# TODO -- Only import the PICO SDK when hardware HAL option is enabled
 # Pico SDK requires this occur prior to setting the project()
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 pico_sdk_init()
 
 project(                    saferotp_lib   C CXX ASM)
+
+# TODO -- exclude unused HAL files from source list?  (currently excluding via `#if defined()` blocks)
 add_library(                saferotp_lib   STATIC
         lib/saferotp_direntry.c
         lib/saferotp_ecc.c
         lib/saferotp_rw.c
         lib/saferotp_debug_stub.c
+        lib/saferotp_debug_stub.h
+        lib/saferotp_hal.c
+        lib/saferotp_hal.h
+        lib/saferotp_hal_hardware.c
+        lib/saferotp_hal_virtualized.c
 )
 
+# TODO -- remove BusPirate specific hacks
 if (NOT BP_VER)
         # Nothing
 elseif(NOT (${BP_VER} MATCHES "5"))
@@ -28,6 +39,7 @@ elseif(NOT (${BP_VER} MATCHES "5"))
 endif()
 
 # Cannot be INTERFACE ... as cannot then find "pico/stdlib.h"
+# TODO -- remove pico_stdlib unless enabling hardware HAL option
 target_link_libraries(      saferotp_lib PRIVATE   pico_stdlib)
 
 target_include_directories( saferotp_lib PRIVATE   lib)

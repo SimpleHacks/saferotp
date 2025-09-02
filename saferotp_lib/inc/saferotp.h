@@ -14,8 +14,10 @@ extern "C" {
 
 // TODO: CMakefile declaring option to enable/disable OTP virtualization
 //       because this overly-simple method currently uses ~16k of RAM.
+#define SAFEROTP_ENABLE_HARDWARE_HAL
 #define SAFEROTP_ENABLE_VIRTUALIZATION
 
+// Some of the APIs only make sense when virtualized OTP support exists....
 #if defined(SAFEROTP_ENABLE_VIRTUALIZATION) // OTP Virtualization support
 /// @brief 
 /// Initializes the virtualization layer.
@@ -25,19 +27,6 @@ extern "C" {
 /// to initialize OTP contents based on what's actually stored in the hardware OTP.
 /// @return true if the virtualization layer was successfully initialized.
 bool saferotp_virtualization_init();
-/// @brief Resets the virtualized OTP value to reflect the values stored in the hardware OTP rows.
-/// Note that, if any page(s) fail to read, the virtualized OTP will also be set to report an
-/// error when read, and the function will return false.  However, processing of later pages will
-/// continue.   For finer-grained control and feedback, use
-/// `saferotp_virtualization_restore_page_from_hardware(uint16_t page)`;
-/// @return true if the restoration of all pages was successful.; false if any page(s)
-bool saferotp_virtualization_restore_all_pages_from_hardware();
-/// @brief Resets a single virtualized OTP page to reflect the avlues stored in the hardware OTP rows.
-/// If the page fails to read, the virtualized OTP will be set to report an error when read, and
-/// the return value will be `false`.  
-/// @param page An OTP page (64 rows), valid range for rp2350 is [0..63].
-/// @return true if the page was successfully read (in raw mode).
-bool saferotp_virtualization_restore_page_from_hardware(uint16_t page);
 /// @brief Provides a way to restore a set of virtualized OTP rows, regardless of current values.
 ///        This is intended to be used to allow state to be stored / restored externally, enabling
 ///        testing of virtualized OTP across reboots.  Restoration can be done at any time, and
@@ -58,7 +47,24 @@ bool saferotp_virtualization_restore(uint16_t starting_row, const void* buffer, 
 bool saferotp_virtualization_save(uint16_t starting_row, void* buffer, size_t buffer_size);
 #endif // defined(SAFEROTP_ENABLE_VIRTUALIZATION)
 
-#pragma region    // OTP Read / Write functions
+// A couple of the APIs only make sense when virtualized OTP support AND using real hardware OTP
+#if defined(SAFEROTP_ENABLE_VIRTUALIZATION) && defined(SAFEROTP_ENABLE_HARDWARE_HAL)
+/// @brief Resets the virtualized OTP value to reflect the values stored in the hardware OTP rows.
+/// Note that, if any page(s) fail to read, the virtualized OTP will also be set to report an
+/// error when read, and the function will return false.  However, processing of later pages will
+/// continue.   For finer-grained control and feedback, use
+/// `saferotp_virtualization_restore_page_from_hardware(uint16_t page)`;
+/// @return true if the restoration of all pages was successful.; false if any page(s)
+bool saferotp_virtualization_restore_all_pages_from_hardware();
+/// @brief Resets a single virtualized OTP page to reflect the avlues stored in the hardware OTP rows.
+/// If the page fails to read, the virtualized OTP will be set to report an error when read, and
+/// the return value will be `false`.  
+/// @param page An OTP page (64 rows), valid range for rp2350 is [0..63].
+/// @return true if the page was successfully read (in raw mode).
+bool saferotp_virtualization_restore_page_from_hardware(uint16_t page);
+#endif // defined(SAFEROTP_ENABLE_VIRTUALIZATION) && defined(SAFEROTP_ENABLE_HARDWARE_HAL)
+
+#pragma region    // Safer OTP Read / Write functions
 
 // RP2350 OTP can encode data in multiple ways:
 // * 24 bits of raw data (no error correction / detection)
@@ -173,7 +179,7 @@ bool saferotp_read_single_value_rbit8(uint16_t start_row, uint32_t* out_data);
 // TODO: add `saferotp_write_data_rbit8(uint16_t start_row, const void* data, size_t count_of_bytes);`
 // TODO: add `saferotp_read_data_rbit8(uint16_t start_row, void* out_data, size_t count_of_bytes);`
 
-#pragma endregion // OTP Read / Write functions
+#pragma endregion // Safer OTP Read / Write functions
 
 #ifdef __cplusplus
 }
