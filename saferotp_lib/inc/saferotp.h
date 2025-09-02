@@ -14,19 +14,30 @@ extern "C" {
 
 // TODO: CMakefile declaring option to enable/disable OTP virtualization
 //       because this overly-simple method currently uses ~16k of RAM.
+#define SAFEROTP_ENABLE_VIRTUALIZATION
 
-#pragma region    // OTP Virtualization support
+#if defined(SAFEROTP_ENABLE_VIRTUALIZATION) // OTP Virtualization support
 /// @brief 
 /// Initializes the virtualization layer.
-/// By default (mask of 0u), all current values are read from OTP to initialize the virtualized buffer.
-/// If any of the bits of the `ignored_pages_mask` are set, then those pages of OTP rows will not be
-/// read from OTP, and will be initialized to all-zero values.
-/// This function may only be called once ... after which OTP access via this library will
-/// be entirely virtualized.
-/// @param ignored_pages_mask If a bit is set, then the corresponding page of OTP rows will be
-///        initialized with zero instead of the current values
+/// After initialization, all OTP rows will default to being unwritten / all-zero.
+/// It is strongly encouraged to immediately afterwards call
+/// `saferotp_virtualization_restore_all_pages_from_hardware()`,
+/// to initialize OTP contents based on what's actually stored in the hardware OTP.
 /// @return true if the virtualization layer was successfully initialized.
-bool saferotp_virtualization_init_pages(uint64_t ignored_pages_mask);
+bool saferotp_virtualization_init();
+/// @brief Resets the virtualized OTP value to reflect the values stored in the hardware OTP rows.
+/// Note that, if any page(s) fail to read, the virtualized OTP will also be set to report an
+/// error when read, and the function will return false.  However, processing of later pages will
+/// continue.   For finer-grained control and feedback, use
+/// `saferotp_virtualization_restore_page_from_hardware(uint16_t page)`;
+/// @return true if the restoration of all pages was successful.; false if any page(s)
+bool saferotp_virtualization_restore_all_pages_from_hardware();
+/// @brief Resets a single virtualized OTP page to reflect the avlues stored in the hardware OTP rows.
+/// If the page fails to read, the virtualized OTP will be set to report an error when read, and
+/// the return value will be `false`.  
+/// @param page An OTP page (64 rows), valid range for rp2350 is [0..63].
+/// @return true if the page was successfully read (in raw mode).
+bool saferotp_virtualization_restore_page_from_hardware(uint16_t page);
 /// @brief Provides a way to restore a set of virtualized OTP rows, regardless of current values.
 ///        This is intended to be used to allow state to be stored / restored externally, enabling
 ///        testing of virtualized OTP across reboots.  Restoration can be done at any time, and
@@ -45,7 +56,8 @@ bool saferotp_virtualization_restore(uint16_t starting_row, const void* buffer, 
 /// @param buffer_size Count of bytes in the buffer. This must be a multiple of 4 bytes.
 /// @return true if the virtualized OTP rows were successfully retrieved.
 bool saferotp_virtualization_save(uint16_t starting_row, void* buffer, size_t buffer_size);
-#pragma endregion // OTP Virtualization support
+#endif // defined(SAFEROTP_ENABLE_VIRTUALIZATION)
+
 #pragma region    // OTP Read / Write functions
 
 // RP2350 OTP can encode data in multiple ways:

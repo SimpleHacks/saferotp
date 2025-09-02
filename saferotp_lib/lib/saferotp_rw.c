@@ -25,15 +25,27 @@ static volatile bool g_WaitForKey_otp_rw = false;
         }                              \
     } while (0)
 
-#pragma region    // internal static function prototypes
-static bool is_valid_otp_range_raw(uint16_t starting_row, size_t raw_byte_count);
-static bool hw_write_raw_otp_wrapper(uint16_t starting_row, const void* buffer, size_t buffer_size);
-static bool hw_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t buffer_size);
-static bool virt_initialize(uint64_t ignored_pages_mask);
+#if defined(SAFEROTP_ENABLE_VIRTUALIZATION) // internal static function prototypes, globals
+static bool virt_initialize();
+static void virt_log_dump_rows_encoded_to_fail_reads(uint16_t starting_row, uint16_t row_count);
+static bool virt_fill_rows_from_hardware(uint16_t starting_row, uint16_t row_count);
+static bool virt_fill_page_from_hardware(uint16_t page);
 static bool virt_override_restore(uint16_t starting_row, const void* buffer, size_t buffer_size);
 static bool virt_override_save(uint16_t starting_row, void* buffer, size_t buffer_size);
 static bool virt_write_raw_otp_wrapper(uint16_t starting_row, const void* buffer, size_t buffer_size);
 static bool virt_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t buffer_size);
+
+typedef struct _BP_VIRTUALIZED_OTP_BUFFER {
+    SAFEROTP_RAW_READ_RESULT rows[NUM_OTP_ROWS]; // 0x1000 == 4096 rows, requiring 4 bytes each == 16k statically allocated buffer (!!)
+} BP_VIRTUALIZED_OTP_BUFFER;
+static BP_VIRTUALIZED_OTP_BUFFER g_virtual_otp = { 0 };
+static bool g_virtual_otp_initialized = false;
+#endif // defined(SAFEROTP_ENABLE_VIRTUALIZATION)
+
+#pragma region    // internal static function prototypes
+static bool is_valid_otp_range_raw(uint16_t starting_row, size_t raw_byte_count);
+static bool hw_write_raw_otp_wrapper(uint16_t starting_row, const void* buffer, size_t buffer_size);
+static bool hw_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t buffer_size);
 static bool write_raw_wrapper(uint16_t starting_row, const void* buffer, size_t buffer_size);
 static bool read_raw_wrapper(uint16_t starting_row, void* buffer, size_t buffer_size);
 static bool read_single_otp_ecc_row(uint16_t row, uint16_t * data_out);
@@ -45,17 +57,31 @@ static bool read_otp_byte_3x(uint16_t row, uint8_t* out_data);
 static bool write_otp_byte_3x(uint16_t row, uint8_t new_value);
 #pragma endregion // internal static function prototypes
 
-// BUGBUG / TODO: enable "virtual" OTP, by writing to memory buffer instead of OTP fuses,
-//                and tracking the written values in a separate buffer (+bitmask indicating which rows were written).
-//                This will allow testing of the OTP code without actually writing to the OTP fuses.
-#pragma region    // OTP HAL layer ... to allow for virtualized OTP
-
-typedef struct _BP_VIRTUALIZED_OTP_BUFFER {
-    SAFEROTP_RAW_READ_RESULT rows[NUM_OTP_ROWS]; // 0x1000 == 4096 rows, requiring 4 bytes each == 16k statically allocated buffer (!!)
-} BP_VIRTUALIZED_OTP_BUFFER;
-static BP_VIRTUALIZED_OTP_BUFFER g_virtual_otp = { 0 };
-static bool g_virtual_otp_initialized = false;
-
+#pragma region    // OTP HAL layer for read/write to actual OTP hardware
+static_assert(NUM_OTP_ROWS == 0x1000u, "NUM_OTP_ROWS must be 0x1000");
+static_assert(NUM_OTP_ROWS <= UINT16_MAX, "NUM_OTP_ROWS must be less than 0xFFFF ... or else must update range checks for overflow conditions");
+static bool is_valid_otp_row_range(uint16_t starting_row, size_t row_count) {
+    // NOTE: using size_t here to ensure proper checks when called from functions that
+    //       calculate row_count based on a buffer size.
+    if (starting_row >= NUM_OTP_ROWS) {
+        return false;
+    }
+    if (row_count > NUM_OTP_ROWS - starting_row) {
+        return false;
+    }
+    if (row_count == 0u) {
+        return false;
+    }
+    return true;
+}
+static bool is_valid_otp_range_raw(uint16_t starting_row, size_t raw_byte_count) {
+    if (raw_byte_count % sizeof(uint32_t) != 0u) {
+        // Must be aligned to 4-byte boundaries
+        return false;
+    }
+    size_t row_count = raw_byte_count / sizeof(uint32_t);
+    return is_valid_otp_row_range(starting_row, row_count);
+}
 // returns TRUE on successful write, FALSE on failures
 static bool hw_write_raw_otp_wrapper(uint16_t starting_row, const void* buffer, size_t buffer_size) {
     // NOTE: rom_func_otp_access() ensures necessary bootrom locks are acquired.
@@ -86,10 +112,12 @@ static bool hw_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t 
     }
     return (BOOTROM_OK == r);
 }
+#pragma endregion // OTP HAL layer for read/write to actual OTP hardware
 
 // Enable "virtualized" OTP ... useful for testing.
 // 16k of OTP is a lot to virtualize... 
 // but RP2350 has 512k, of which >256k is currently free, so go with SIMPLE!
+// Example usage by client:
 // * [ ] At initialization:
 //   * [ ] Detect if OTP virtualization file exists on media (and correct size)
 //   * [ ] If so, read that file into memory
@@ -116,76 +144,58 @@ static bool hw_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t 
 //   * Values: 0x0 == R/W, 0x1 == R/O, 0x3 == NO ACCESS
 //   * All other values == YAGNI
 //
-static_assert(NUM_OTP_ROWS == 0x1000u, "NUM_OTP_ROWS must be 0x1000");
-static_assert(NUM_OTP_ROWS <= UINT16_MAX, "NUM_OTP_ROWS must be less than 0xFFFF ... or else must update range checks for overflow conditions");
-static bool is_valid_otp_range_raw(uint16_t starting_row, size_t raw_byte_count) {
-    if (starting_row >= NUM_OTP_ROWS) {
-        // Can only access from 0x000 .. (NUM_OTP_ROWS-1)
-        return false;
-    }
-    if (raw_byte_count % sizeof(uint32_t) != 0u) {
-        // Must be aligned to 4-byte boundaries
-        return false;
-    }
-    if (raw_byte_count > NUM_OTP_ROWS * sizeof(uint32_t)) {
-        // even if started at zero, this would be too large
-        // separate check to avoid overflows in later checks
-        return false;
-    }
-    // Above checks ensure this is safe to store in uint16_t
-    uint16_t row_count = raw_byte_count / sizeof(uint32_t);
-    if (row_count == 0u) {
-        return false;
-    }
-    if ((NUM_OTP_ROWS - row_count) < starting_row) {
-        // this would overflow past the last OTP row
-        return false;
-    }
-    // All checks passed.
-    return true;
-}
 
-static bool virt_initialize(uint64_t ignored_pages_mask) {
+#if defined(SAFEROTP_ENABLE_VIRTUALIZATION) // OTP HAL layer for read/write to virtualized OTP
+static bool virt_initialize() {
     // Initialize the virtualized OTP pages
     if (g_virtual_otp_initialized) {
-        PRINT_ERROR("OTP VIRT Error: Attempt to re-initialize already-virtualized OTP data\n");
         return false;
     }
     memset(&g_virtual_otp, 0, sizeof(g_virtual_otp));
-    // read all 16k of OTP into the virtualized buffer
-    size_t error_count = 0u;
-    uint16_t page = 0;
-    for (; page < NUM_OTP_PAGES; ++page) {
-        uint64_t tst_mask = 1u;
-        tst_mask <<= page;
-        // skip values from this page if requested
-        if ((ignored_pages_mask & tst_mask) != 0u) {
-            // caller requested to ignored this page, so skip it
-            continue;
-        }
-        uint16_t row = page * NUM_OTP_PAGE_ROWS; // starting row for this page
-        for (uint16_t i = 0; i < NUM_OTP_PAGE_ROWS; ++i, ++row) {
-            if (!hw_read_raw_otp_wrapper(row, &g_virtual_otp.rows[row], sizeof(SAFEROTP_RAW_READ_RESULT))) {
-                // can easily scan for errors later by just checking if any of the high bits were set
-                g_virtual_otp.rows[row].as_uint32 = 0xFFFFFFFFu; // ensure the stored value is an error
-                error_count++;
-            }
-        }
-    }
-    if (error_count > 0u) {
-        PRINT_WARNING("OTP VIRT Warning: Failed to read %d rows of OTP data into virtualized buffer\n", error_count);
-        // loop and print failing indices?
-        for (uint16_t row = 0; row < 0x1000u; ++row) {
-            if ((g_virtual_otp.rows[row].as_uint32 & 0xFFu) != 0u){
-                PRINT_WARNING("OTP VIRT Warning: -->  Row 0x%03x (%02x:%02x) failed to read\n",
-                    row,
-                    (row / NUM_OTP_PAGE_ROWS), (row % NUM_OTP_PAGE_ROWS)
-                );
-            }
-        }
-    }
     g_virtual_otp_initialized = true;
     return true;
+}
+static void virt_log_dump_rows_encoded_to_fail_reads(uint16_t starting_row, uint16_t row_count) {
+    if (row_count > NUM_OTP_ROWS - starting_row) {
+        row_count = NUM_OTP_ROWS - starting_row;
+    }
+    uint16_t end_row = starting_row + row_count;
+    for (uint16_t row = starting_row; row < end_row; ++row) {
+        if (g_virtual_otp.rows[row].is_error) {
+            PRINT_WARNING("OTP VIRT Warning: -->  Row 0x%03x (%02x:%02x) failed to read\n",
+                row,
+                (row / NUM_OTP_PAGE_ROWS), (row % NUM_OTP_PAGE_ROWS)
+            );
+        }
+    }
+    
+}
+static bool virt_fill_rows_from_hardware(uint16_t starting_row, uint16_t row_count) {
+    if (starting_row > NUM_OTP_ROWS) {
+        PRINT_ERROR("OTP row 0x%03x is too large (max %03x)", starting_row, NUM_OTP_ROWS-1);
+        return false;
+    }
+    if (row_count > NUM_OTP_ROWS - starting_row) {
+        row_count = NUM_OTP_ROWS - starting_row;
+    }
+    uint16_t end_row = starting_row + row_count;
+    size_t error_count = 0u;
+    for (uint16_t row = starting_row; row < end_row; ++row) {
+        if (!hw_read_raw_otp_wrapper(row, &g_virtual_otp.rows[row], sizeof(SAFEROTP_RAW_READ_RESULT))) {
+            // can easily scan for errors later by just checking if any of the high bits were set
+            g_virtual_otp.rows[row].as_uint32 = 0xFFFFFFFFu; // ensure the stored value is an error
+            error_count++;
+        }
+    }
+    return error_count == 0u;
+}
+static bool virt_fill_page_from_hardware(uint16_t page) {
+    if (page >= NUM_OTP_PAGES) {
+        PRINT_ERROR("OTP page %2d (%02x) is invalid (max %2d (%02x))\n", page, page, NUM_OTP_PAGES-1u, NUM_OTP_PAGES-1u);
+        return false;
+    }
+    // read the requested page of OTP into the virtualized buffer
+    return virt_fill_rows_from_hardware(page * NUM_OTP_PAGE_ROWS, NUM_OTP_PAGE_ROWS);
 }
 static bool virt_override_restore(uint16_t starting_row, const void* buffer, size_t buffer_size) {
     // callers can then save/restore OTP state, such as from storage / file system
@@ -213,6 +223,11 @@ static bool virt_write_raw_otp_wrapper(uint16_t starting_row, const void* buffer
         PRINT_ERROR("OTP VIRT Error: Attempt to write virtualized OTP data without initialization\n");
         return false;
     }
+    if (NULL == buffer) {
+        PRINT_FATAL("Function call to virt_write_raw_otp_wrapper() with NULL buffer\n");
+        return false;
+    }
+
     // belt and suspenders ... even if caller did this
     if (!is_valid_otp_range_raw(starting_row, buffer_size)) {
         PRINT_ERROR("OTP VIRT WRITE Error: Invalid (start row / raw byte count): 0x%03x %zu\n", starting_row, buffer_size);
@@ -246,8 +261,13 @@ static bool virt_write_raw_otp_wrapper(uint16_t starting_row, const void* buffer
     }
     return true;
 }
-// returns TRUE on successful read, FALSE on failures
 static bool virt_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t buffer_size) {
+    if (NULL == buffer) {
+        PRINT_FATAL("Function call to virt_read_raw_otp_wrapper() with NULL buffer\n");
+        return false;
+    }
+    memset(buffer, 0, buffer_size);
+
     if (!g_virtual_otp_initialized) {
         PRINT_ERROR("OTP VIRT Error: Attempt to write virtualized OTP data without initialization\n");
         return false;
@@ -275,20 +295,22 @@ static bool virt_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_
     }
     return true;
 }
+#endif // defined(SAFEROTP_ENABLE_VIRTUALIZATION) // OTP HAL layer for read/write to virtualized OTP
 
-#pragma endregion // OTP HAL layer ... to allow for virtualized OTP
+#pragma endregion 
 
-// don't want to use that difficult-to-parse API in many places....
+// don't want to use the SDK's difficult-to-parse API....
 static bool write_raw_wrapper(uint16_t starting_row, const void* buffer, size_t buffer_size) {
     if (!is_valid_otp_range_raw(starting_row, buffer_size)) {
         PRINT_ERROR("OTP WRITE Error: Invalid (start row / raw byte count): 0x%03x %zu\n", starting_row, buffer_size);
         return false;
     }
+#if defined(SAFEROTP_ENABLE_VIRTUALIZATION)
     if (g_virtual_otp_initialized) {
         return virt_write_raw_otp_wrapper(starting_row, buffer, buffer_size);
-    } else {
-        return hw_write_raw_otp_wrapper(starting_row, buffer, buffer_size);
     }
+#endif // defined(SAFEROTP_ENABLE_VIRTUALIZATION)
+    return hw_write_raw_otp_wrapper(starting_row, buffer, buffer_size);
 }
 static bool read_raw_wrapper(uint16_t starting_row, void* buffer, size_t buffer_size) {
     if (!is_valid_otp_range_raw(starting_row, buffer_size)) {
@@ -299,11 +321,13 @@ static bool read_raw_wrapper(uint16_t starting_row, void* buffer, size_t buffer_
         PRINT_ERROR("OTP VIRT Error: Attempt to read virtualized OTP data with non-aligned size %d\n", buffer_size);
         return false;
     }
+
+#if defined(SAFEROTP_ENABLE_VIRTUALIZATION)
     if (g_virtual_otp_initialized) {
         return virt_read_raw_otp_wrapper(starting_row, buffer, buffer_size);
-    } else {
-        return hw_read_raw_otp_wrapper(starting_row, buffer, buffer_size);
     }
+#endif //defined(SAFEROTP_ENABLE_VIRTUALIZATION)
+    return hw_read_raw_otp_wrapper(starting_row, buffer, buffer_size);
 }
 // RP2350 OTP storage is strongly recommended to use some form of
 // error correction.  Most rows will use ECC, but three other forms exist:
@@ -736,9 +760,38 @@ static bool write_otp_byte_3x(uint16_t row, uint8_t new_value) {
 /// All code above this point are the static helper functions / implementation details.
 /// Only the below are the public API functions.
 
-bool saferotp_virtualization_init_pages(uint64_t ignored_pages_mask) {
-    virt_initialize(ignored_pages_mask);
-    return true;
+#if defined(SAFEROTP_ENABLE_VIRTUALIZATION) // OTP Virtualization support
+bool saferotp_virtualization_init() {
+    if (g_virtual_otp_initialized) {
+        PRINT_ERROR("OTP VIRT Error: init() should only be called once\n");
+        return false; 
+    }
+    return virt_initialize();
+}
+bool saferotp_virtualization_restore_all_pages_from_hardware() {
+    if (g_virtual_otp_initialized) {
+        PRINT_ERROR("OTP VIRT Error: init() must be called before use of virtualization\n");
+        return false; 
+    }
+    bool result = true;
+    for (uint16_t i = 0; i < NUM_OTP_PAGES; ++i) {
+        result = result && virt_fill_page_from_hardware(i);
+    }
+    if (!result) {
+        virt_log_dump_rows_encoded_to_fail_reads(0, NUM_OTP_ROWS);
+    }
+    return result;
+}
+bool saferotp_virtualization_restore_page_from_hardware(uint16_t page) {
+    if (g_virtual_otp_initialized) {
+        PRINT_ERROR("OTP VIRT Error: init() must be called before use of virtualization\n");
+        return false; 
+    }
+    bool result = virt_fill_page_from_hardware(page);
+    if (!result) {
+        virt_log_dump_rows_encoded_to_fail_reads(page, NUM_OTP_PAGE_ROWS);
+    }
+    return result;
 }
 bool saferotp_virtualization_restore(uint16_t starting_row, const void* buffer, size_t buffer_size) {
     return virt_override_restore(starting_row, buffer, buffer_size);
@@ -746,6 +799,7 @@ bool saferotp_virtualization_restore(uint16_t starting_row, const void* buffer, 
 bool saferotp_virtualization_save(uint16_t starting_row, void* buffer, size_t buffer_size) {
     return virt_override_save(starting_row, buffer, buffer_size);
 }
+#endif // defined(SAFEROTP_ENABLE_VIRTUALIZATION)
 
 // NOTE: On failure, the state of the OTP row(s) is UNDEFINED.
 //       For example, some rows may have been written, while other rows failed to be written.
