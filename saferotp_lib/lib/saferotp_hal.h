@@ -3,6 +3,15 @@
 #include <inttypes.h>
 #include "saferotp.h"
 
+#if defined(SAFEROTP_ENABLE_HARDWARE_HAL)
+#include "pico/bootrom.h" // defines rom_func_otp_access(), NUM_OTP_ROWS, NUM_OTP_PAGES
+#else
+// Define these here anytime the hardware layer is not enabled
+#define NUM_OTP_PAGES (64u)
+#define NUM_OTP_ROWS  (64u*64u)
+#endif
+
+
 // Redirects to virtualized OTP if enabled and initialized,
 // else writes to hardware OTP (if enabled),
 // else will return false to all calls.
@@ -17,15 +26,10 @@ bool is_valid_otp_row_range(uint16_t starting_row, size_t row_count);
 
 #if defined(SAFEROTP_ENABLE_HARDWARE_HAL)
 
-#include "pico/bootrom.h" // defines rom_func_otp_access(), NUM_OTP_ROWS, NUM_OTP_PAGES
 bool hw_write_raw_otp_wrapper(uint16_t starting_row, const void* buffer, size_t buffer_size);
 bool hw_read_raw_otp_wrapper(uint16_t starting_row, void* buffer, size_t buffer_size);
 
 #else
-
-// Define these here anytime the hardware layer is not enabled
-#define NUM_OTP_PAGES (64u)
-#define NUM_OTP_ROWS  (64u*64u)
 
 __attribute__((deprecated("Hardware HAL not enabled")))
 inline bool hw_write_raw_otp_wrapper(uint16_t, const void*, size_t) {

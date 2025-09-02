@@ -12,10 +12,18 @@
 extern "C" {
 #endif
 
-// TODO: CMakefile declaring option to enable/disable OTP virtualization
-//       because this overly-simple method currently uses ~16k of RAM.
-#define SAFEROTP_ENABLE_HARDWARE_HAL
-#define SAFEROTP_ENABLE_VIRTUALIZATION
+#if 0
+    #if defined(SAFEROTP_ENABLE_HARDWARE_HAL)
+        #warning("HAL: + Hardware enabled")
+    #else
+        #warning("HAL: - Hardware disabled")
+    #endif
+    #if defined(SAFEROTP_ENABLE_VIRTUALIZATION)
+        #warning("HAL: + Virtualized OTP enabled")
+    #else
+        #warning("HAL: - Virtualized OTP enabled")
+    #endif
+#endif
 
 // Some of the APIs only make sense when virtualized OTP support exists....
 #if defined(SAFEROTP_ENABLE_VIRTUALIZATION) // OTP Virtualization support
